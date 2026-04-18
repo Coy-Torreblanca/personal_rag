@@ -6,7 +6,7 @@
 ### 2. The Identity Layer
 * **Auth & RBAC:** Clerk. It handles B2B organization switching natively ("org auth" to "user auth") and integrates flawlessly with Next.js middleware to protect your routes.
 
-### 3. The Backend API & Workers (Containerized via Docker)
+### 3. The Backend API & Workers (Containerized via Podman)
 * **Core Framework:** FastAPI. Native async support is non-negotiable for AI streaming and concurrently fetching data from Square.
 * **Package Management:** `uv`. It will keep your Python dependency resolution blisteringly fast and your Docker builds incredibly lean.
 * **AI Orchestration:** LiteLLM (to standardize API calls so you can swap between OpenAI, Anthropic, or local models without rewriting your routing).

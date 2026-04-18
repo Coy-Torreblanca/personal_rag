@@ -47,10 +47,8 @@ dev:
 	@echo "Starting all development services..."
 	@if command -v podman-compose &> /dev/null; then \
 		podman-compose up; \
-	elif command -v docker-compose &> /dev/null; then \
-		docker-compose up; \
 	else \
-		echo "Error: Neither podman-compose nor docker-compose found."; \
+		echo "Error: podman-compose not found. Please install Podman and podman-compose."; \
 		exit 1; \
 	fi
 
@@ -59,10 +57,8 @@ dev-up:
 	@echo "Starting development services in background..."
 	@if command -v podman-compose &> /dev/null; then \
 		podman-compose up -d; \
-	elif command -v docker-compose &> /dev/null; then \
-		docker-compose up -d; \
 	else \
-		echo "Error: Neither podman-compose nor docker-compose found."; \
+		echo "Error: podman-compose not found. Please install Podman and podman-compose."; \
 		exit 1; \
 	fi
 	@echo "Services started! Use 'make dev-logs' to view logs."
@@ -72,10 +68,8 @@ dev-down:
 	@echo "Stopping development services..."
 	@if command -v podman-compose &> /dev/null; then \
 		podman-compose down; \
-	elif command -v docker-compose &> /dev/null; then \
-		docker-compose down; \
 	else \
-		echo "Error: Neither podman-compose nor docker-compose found."; \
+		echo "Error: podman-compose not found. Please install Podman and podman-compose."; \
 		exit 1; \
 	fi
 	@echo "Services stopped!"
@@ -85,10 +79,8 @@ dev-logs:
 	@echo "Showing logs for development services..."
 	@if command -v podman-compose &> /dev/null; then \
 		podman-compose logs -f; \
-	elif command -v docker-compose &> /dev/null; then \
-		docker-compose logs -f; \
 	else \
-		echo "Error: Neither podman-compose nor docker-compose found."; \
+		echo "Error: podman-compose not found. Please install Podman and podman-compose."; \
 		exit 1; \
 	fi
 
@@ -133,10 +125,8 @@ db-up:
 	@echo "Starting database services only..."
 	@if command -v podman-compose &> /dev/null; then \
 		podman-compose up -d postgres redis; \
-	elif command -v docker-compose &> /dev/null; then \
-		docker-compose up -d postgres redis; \
 	else \
-		echo "Error: Neither podman-compose nor docker-compose found."; \
+		echo "Error: podman-compose not found. Please install Podman and podman-compose."; \
 		exit 1; \
 	fi
 	@sleep 5
@@ -146,10 +136,8 @@ db-down:
 	@echo "Stopping database services only..."
 	@if command -v podman-compose &> /dev/null; then \
 		podman-compose stop postgres redis; \
-	elif command -v docker-compose &> /dev/null; then \
-		docker-compose stop postgres redis; \
 	else \
-		echo "Error: Neither podman-compose nor docker-compose found."; \
+		echo "Error: podman-compose not found. Please install Podman and podman-compose."; \
 		exit 1; \
 	fi
 	@echo "Database services stopped!"
@@ -159,9 +147,9 @@ db-reset: db-down
 	@if command -v podman &> /dev/null; then \
 		podman volume rm 30ai_postgres_data 2>/dev/null || true; \
 		podman volume rm 30ai_redis_data 2>/dev/null || true; \
-	elif command -v docker &> /dev/null; then \
-		docker volume rm 30ai_postgres_data 2>/dev/null || true; \
-		docker volume rm 30ai_redis_data 2>/dev/null || true; \
+	else \
+		echo "Error: podman not found. Please install Podman."; \
+		exit 1; \
 	fi
 	@echo "Database reset complete!"
 

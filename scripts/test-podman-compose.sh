@@ -1,23 +1,20 @@
 #!/bin/bash
 
-echo "Testing Docker Compose setup..."
+echo "Testing Podman Compose setup..."
 echo "================================"
 
-# Check if podman-compose or docker-compose is available
+# Check if podman-compose is available
 if command -v podman-compose &> /dev/null; then
     COMPOSE_CMD="podman-compose"
     echo "Using podman-compose"
-elif command -v docker-compose &> /dev/null; then
-    COMPOSE_CMD="docker-compose"
-    echo "Using docker-compose"
 else
-    echo "Error: Neither podman-compose nor docker-compose found."
+    echo "Error: podman-compose not found. Please install Podman and podman-compose."
     exit 1
 fi
 
 # Test 1: Build images
 echo ""
-echo "1. Building Docker images..."
+echo "1. Building container images..."
 $COMPOSE_CMD build --no-cache || {
     echo "❌ Failed to build images"
     exit 1
@@ -102,8 +99,8 @@ $COMPOSE_CMD down && echo "✅ Services stopped successfully" || {
 }
 
 echo ""
-echo "================================"
-echo "✅ All tests passed! Docker Compose setup is working correctly."
+echo "==============================="
+echo "✅ All tests passed! Podman Compose setup is working correctly."
 echo ""
 echo "To start services for development:"
 echo "  make db-up"

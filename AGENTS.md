@@ -19,13 +19,16 @@ This project follows a production-standard monorepo structure:
 ### Common Commands
 ```bash
 make setup      # Set up development environment
-make dev        # Start development services
-make db-up      # Start database services
+make dev        # Start all development services (foreground)
+make dev-up     # Start development services (background)
+make dev-down   # Stop development services
+make dev-logs   # View service logs
+make db-up      # Start database services only
 make test       # Run tests
 make lint       # Run linters
 ```
 
 ## Database
 
-PostgreSQL with pgvector extension is configured in `docker-compose.yml`.
+PostgreSQL with pgvector extension is configured in `docker-compose.yml` (using Podman Compose).
 Use environment variables for configuration (see `.env.example`).

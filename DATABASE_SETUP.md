@@ -4,8 +4,8 @@ This project uses PostgreSQL with the pgvector extension for vector embeddings, 
 
 ## Prerequisites
 
-1. **Podman** (or Docker) installed
-2. **podman-compose** (or docker-compose) installed
+1. **Podman** installed
+2. **podman-compose** installed
 
 ### Install Podman on macOS:
 ```bash

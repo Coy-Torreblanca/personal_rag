@@ -27,8 +27,8 @@
 - **Document Parsing**: Unstructured.io
 
 ### Infrastructure
-- **Containerization**: Docker + Podman
-- **Orchestration**: Docker Compose
+- **Containerization**: Podman
+- **Orchestration**: Podman Compose
 - **Deployment**: Render/Railway (Backend), Vercel (Frontend)
 
 ## 📁 Project Structure
@@ -56,7 +56,7 @@
 
 - Node.js 18+ and npm
 - Python 3.11+ and uv
-- Podman/Docker and docker-compose/podman-compose
+- **Podman** and **podman-compose**
 
 ### Quick Start
 
@@ -79,13 +79,19 @@
 
 4. **Start development services**
    ```bash
+   # Start all services in foreground (logs visible)
    make dev
+   
+   # Or start in background
+   make dev-up
    ```
 
 5. **Access the applications**
    - Frontend: http://localhost:3000
    - API: http://localhost:8000
    - API Docs: http://localhost:8000/docs
+   - View logs: `make dev-logs`
+   - Stop services: `make dev-down`
 
 ### Development Commands
 
@@ -109,9 +115,9 @@ make format
 make clean
 ```
 
-## 🐳 Docker Development
+## 🐳 Podman Development
 
-The project uses Docker Compose to manage all services:
+The project uses Podman Compose to manage all services:
 
 ### Services Included:
 1. **PostgreSQL** (port 5432) - Database with pgvector extension
@@ -122,43 +128,34 @@ The project uses Docker Compose to manage all services:
 
 ### Using Makefile (Recommended)
 ```bash
-# Start all services
-make db-up
-
-# Start development environment (all services)
+# Start all services in foreground (see logs)
 make dev
 
-# Stop services
+# Start all services in background
+make dev-up
+
+# View logs
+make dev-logs
+
+# Stop all services
+make dev-down
+
+# Start only database services
+make db-up
+
+# Stop only database services
 make db-down
 
 # Reset database (WARNING: destroys data)
 make db-reset
 ```
 
-### Using Docker Compose Directly
+### Using Podman Compose Directly
 ```bash
-# Start all services
-docker-compose up -d
+# Start all services in foreground
+podman-compose up
 
-# Start with rebuild
-docker-compose up -d --build
-
-# View logs
-docker-compose logs -f
-
-# View logs for specific service
-docker-compose logs -f api
-
-# Stop services
-docker-compose down
-
-# Stop and remove volumes
-docker-compose down -v
-```
-
-### Using Podman Compose
-```bash
-# Start all services
+# Start all services in background
 podman-compose up -d
 
 # View logs
@@ -168,10 +165,28 @@ podman-compose logs -f
 podman-compose down
 ```
 
+# Start with rebuild
+podman-compose up -d --build
+
+# View logs
+podman-compose logs -f
+
+# View logs for specific service
+podman-compose logs -f api
+
+# Stop services
+podman-compose down
+
+# Stop and remove volumes
+podman-compose down -v
+```
+
+
+
 ### Testing the Setup
 ```bash
 # Run comprehensive tests
-./scripts/test-docker-compose.sh
+./scripts/test-podman-compose.sh
 ```
 
 ## 📊 Database
@@ -228,12 +243,12 @@ npm run test:e2e
 
 ### Production Deployment
 1. Set up production environment variables in `.env.production`
-2. Build and push Docker images
+2. Build and push container images
 3. Deploy to your infrastructure
 
-### Using Docker Compose for Production
+### Using Podman Compose for Production
 ```bash
-docker-compose -f docker-compose.prod.yml up -d
+podman-compose -f docker-compose.prod.yml up -d
 ```
 
 ## 📚 Documentation

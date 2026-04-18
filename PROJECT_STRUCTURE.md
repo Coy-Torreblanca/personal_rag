@@ -24,7 +24,7 @@ This document outlines the production-standard directory structure for the 30ai 
 │   └── config/               # Shared configuration
 │
 ├── infrastructure/           # Infrastructure as Code
-│   ├── docker/              # Docker configurations
+│   ├── docker/              # Container configurations (Podman)
 │   ├── kubernetes/          # K8s manifests
 │   └── terraform/           # Terraform modules
 │
@@ -34,8 +34,8 @@ This document outlines the production-standard directory structure for the 30ai 
 ├── .env.example             # Environment template
 ├── .env.local               # Local development env (gitignored)
 ├── .env.production          # Production env (gitignored)
-├── docker-compose.yml       # Local development services
-├── docker-compose.prod.yml  # Production services
+├── docker-compose.yml       # Local development services (Podman Compose)
+├── docker-compose.prod.yml  # Production services (Podman Compose)
 ├── Makefile                 # Common tasks
 ├── pyproject.toml          # Python project configuration
 ├── package.json            # Root package.json (workspace)
@@ -107,8 +107,8 @@ apps/api/
 ├── alembic/              # Database migrations
 │   ├── versions/         # Migration files
 │   └── env.py            # Migration environment
-├── Dockerfile            # Production Dockerfile
-├── Dockerfile.dev        # Development Dockerfile
+├── Dockerfile            # Production container definition
+├── Dockerfile.dev        # Development container definition
 ├── requirements.txt      # Python dependencies
 ├── requirements-dev.txt  # Development dependencies
 ├── pyproject.toml       # Python project config
@@ -191,7 +191,7 @@ infrastructure/
 
 ### 6. Development Configuration
 ```
-.dockerignore           # Docker ignore patterns
+.dockerignore           # Container ignore patterns
 .gitignore             # Git ignore patterns
 .editorconfig          # Editor configuration
 .prettierrc            # Code formatting
@@ -215,7 +215,8 @@ infrastructure/
 1. Clone the repository
 2. Copy `.env.example` to `.env.local` and configure
 3. Run `make setup` to initialize the project
-4. Run `make dev` to start development services
+4. Run `make dev` to start all development services (or `make dev-up` for background)
 5. Run `make test` to run tests
+6. Use `make dev-logs` to view logs, `make dev-down` to stop services
 
 This structure follows industry best practices for scalable, maintainable applications with AI/ML components.
