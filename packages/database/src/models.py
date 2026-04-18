@@ -1,5 +1,6 @@
 from datetime import datetime
-from typing import Optional, List
+from enum import StrEnum
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlmodel import (
@@ -10,139 +11,131 @@ from sqlmodel import (
     JSON,
     Text,
     Index,
-    text,
 )
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy import DateTime, String, Integer, BigInteger, ForeignKey
+from sqlalchemy import DateTime
 from sqlalchemy.sql import func
+
+
+class DocumentStatus(StrEnum):
+    """Document status enum."""
+
+    UPLOADED = "uploaded"
+    PROCESSING = "processing"
+    PROCESSED = "processed"
+    ERROR = "error"
+
+
+class ProcessingJobStatus(StrEnum):
+    """Processing job status enum."""
+
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class OrganizationBase(SQLModel):
     """Base organization model."""
-    
+
     name: str = Field(max_length=255, nullable=False)
-    clerk_organization_id: Optional[str] = Field(
+    clerk_organization_id: str | None = Field(
         default=None, max_length=255, unique=True, index=True
     )
-    metadata: dict = Field(default={}, sa_column=Column(JSON))
+    meta_data: dict[str, object] = Field(default={}, sa_column=Column(JSON))
 
 
 class Organization(OrganizationBase, table=True):
     """Organization model for multi-tenancy."""
-    
-    __tablename__ = "organizations"
-    
-    id: UUID = Field(
-        default_factory=uuid4,
-        primary_key=True,
-        sa_column=Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    )
+
+    __tablename__ = "organizations"  # pyright: ignore[reportUnannotatedClassAttribute, reportAssignmentType]
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), server_default=func.now())
+        sa_column=Column(DateTime(timezone=True), server_default=func.now()),
     )
     updated_at: datetime = Field(
-        default_factory=datetime.utcnow,
         sa_column=Column(
-            DateTime(timezone=True), 
-            server_default=func.now(), 
-            onupdate=func.now()
-        )
+            DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+        ),
     )
-    
+
     # Relationships
-    users: List["User"] = Relationship(back_populates="organization")
-    documents: List["Document"] = Relationship(back_populates="organization")
+    users: list["User"] = Relationship(back_populates="organization")
+    documents: list["Document"] = Relationship(back_populates="organization")
 
 
 class UserBase(SQLModel):
     """Base user model."""
-    
-    clerk_user_id: Optional[str] = Field(
+
+    clerk_user_id: str | None = Field(
         default=None, max_length=255, unique=True, index=True
     )
     email: str = Field(max_length=255, nullable=False, index=True)
-    full_name: Optional[str] = Field(default=None, max_length=255)
+    full_name: str | None = Field(default=None, max_length=255)
     organization_id: UUID = Field(foreign_key="organizations.id", nullable=False)
-    metadata: dict = Field(default={}, sa_column=Column(JSON))
+    meta_data: dict[str, object] = Field(default={}, sa_column=Column(JSON))
 
 
 class User(UserBase, table=True):
     """User model synced from Clerk."""
-    
-    __tablename__ = "users"
-    
-    id: UUID = Field(
-        default_factory=uuid4,
-        primary_key=True,
-        sa_column=Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    )
+
+    # type: ignore[assignment]
+    __tablename__ = "users"  # pyright: ignore[reportUnannotatedClassAttribute, reportAssignmentType]
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), server_default=func.now())
+        sa_column=Column(DateTime(timezone=True), server_default=func.now()),
     )
     updated_at: datetime = Field(
-        default_factory=datetime.utcnow,
         sa_column=Column(
-            DateTime(timezone=True), 
-            server_default=func.now(), 
-            onupdate=func.now()
-        )
+            DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+        ),
     )
-    
+
     # Relationships
     organization: Organization = Relationship(back_populates="users")
-    documents: List["Document"] = Relationship(back_populates="user")
+    documents: list["Document"] = Relationship(back_populates="user")
 
 
 class DocumentBase(SQLModel):
     """Base document model."""
-    
+
     organization_id: UUID = Field(foreign_key="organizations.id", nullable=False)
     user_id: UUID = Field(foreign_key="users.id", nullable=False)
     filename: str = Field(max_length=255, nullable=False)
     file_type: str = Field(max_length=50, nullable=False)  # pdf, docx, txt, etc.
-    file_size: Optional[int] = Field(default=None)  # Size in bytes
-    s3_key: Optional[str] = Field(default=None, max_length=500)  # S3 object key
-    status: str = Field(
-        default="uploaded", max_length=50
-    )  # uploaded, processing, processed, error
-    metadata: dict = Field(default={}, sa_column=Column(JSON))
+    file_size: int | None = Field(default=None)  # Size in bytes
+    s3_key: str | None = Field(default=None, max_length=500)  # S3 object key
+    status: DocumentStatus = Field(default=DocumentStatus.UPLOADED, max_length=50)
+    meta_data: dict[str, object] = Field(default={}, sa_column=Column(JSON))
 
 
 class Document(DocumentBase, table=True):
     """Document metadata model."""
-    
+
+    # type: ignore[assignment]
     __tablename__ = "documents"
-    
-    id: UUID = Field(
-        default_factory=uuid4,
-        primary_key=True,
-        sa_column=Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), server_default=func.now())
+        sa_column=Column(DateTime(timezone=True), server_default=func.now()),
     )
     updated_at: datetime = Field(
-        default_factory=datetime.utcnow,
         sa_column=Column(
-            DateTime(timezone=True), 
-            server_default=func.now(), 
-            onupdate=func.now()
-        )
+            DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+        ),
     )
-    
+
     # Relationships
     organization: Organization = Relationship(back_populates="documents")
     user: User = Relationship(back_populates="documents")
-    chunks: List["DocumentChunk"] = Relationship(
-        back_populates="document", 
-        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    chunks: list["DocumentChunk"] = Relationship(
+        back_populates="document",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
-    
+
     # Indexes
-    __table_args__ = (
+    __table_args__: tuple[Index, ...] = (  # type: ignore
         Index("idx_documents_organization_status", "organization_id", "status"),
         Index("idx_documents_user", "user_id"),
     )
@@ -150,44 +143,37 @@ class Document(DocumentBase, table=True):
 
 class DocumentChunkBase(SQLModel):
     """Base document chunk model."""
-    
+
     document_id: UUID = Field(foreign_key="documents.id", nullable=False)
     organization_id: UUID = Field(foreign_key="organizations.id", nullable=False)
     chunk_index: int = Field(nullable=False)  # Order of chunk in document
     content: str = Field(sa_column=Column(Text, nullable=False))
-    embedding: Optional[str] = Field(default=None)  # Will be vector type
-    metadata: dict = Field(default={}, sa_column=Column(JSON))
+    embedding: str | None = Field(default=None)  # Will be vector type
+    meta_data: dict[str, object] = Field(default={}, sa_column=Column(JSON))
 
 
 class DocumentChunk(DocumentChunkBase, table=True):
     """Document chunk with vector embedding."""
-    
+
+    # type: ignore[assignment]
     __tablename__ = "document_chunks"
-    
-    id: UUID = Field(
-        default_factory=uuid4,
-        primary_key=True,
-        sa_column=Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), server_default=func.now())
+        sa_column=Column(DateTime(timezone=True), server_default=func.now()),
     )
     updated_at: datetime = Field(
-        default_factory=datetime.utcnow,
         sa_column=Column(
-            DateTime(timezone=True), 
-            server_default=func.now(), 
-            onupdate=func.now()
-        )
+            DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+        ),
     )
-    
+
     # Relationships
     document: Document = Relationship(back_populates="chunks")
     organization: Organization = Relationship()
-    
+
     # Indexes
-    __table_args__ = (
+    __table_args__: tuple[Index, ...] = (  # type: ignore
         Index("idx_document_chunks_document", "document_id"),
         Index("idx_document_chunks_organization", "organization_id"),
     )
@@ -195,47 +181,41 @@ class DocumentChunk(DocumentChunkBase, table=True):
 
 class ProcessingJobBase(SQLModel):
     """Base processing job model."""
-    
+
     document_id: UUID = Field(foreign_key="documents.id", nullable=False)
     job_type: str = Field(max_length=50, nullable=False)  # parsing, embedding, etc.
-    status: str = Field(
-        default="pending", max_length=50
-    )  # pending, processing, completed, failed
-    celery_task_id: Optional[str] = Field(default=None, max_length=255)
-    error_message: Optional[str] = Field(default=None, sa_column=Column(Text))
-    metadata: dict = Field(default={}, sa_column=Column(JSON))
-    started_at: Optional[datetime] = Field(default=None)
-    completed_at: Optional[datetime] = Field(default=None)
+    status: ProcessingJobStatus = Field(
+        default=ProcessingJobStatus.PENDING, max_length=50
+    )
+    celery_task_id: str | None = Field(default=None, max_length=255)
+    error_message: str | None = Field(default=None, sa_column=Column(Text))
+    meta_data: dict[str, object] = Field(default={}, sa_column=Column(JSON))
+    started_at: datetime | None = Field(default=None)
+    completed_at: datetime | None = Field(default=None)
 
 
 class ProcessingJob(ProcessingJobBase, table=True):
     """Background processing job tracking."""
-    
+
+    # type: ignore[assignment]
     __tablename__ = "processing_jobs"
-    
-    id: UUID = Field(
-        default_factory=uuid4,
-        primary_key=True,
-        sa_column=Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), server_default=func.now())
+        sa_column=Column(DateTime(timezone=True), server_default=func.now()),
     )
     updated_at: datetime = Field(
-        default_factory=datetime.utcnow,
         sa_column=Column(
-            DateTime(timezone=True), 
-            server_default=func.now(), 
-            onupdate=func.now()
-        )
+            DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+        ),
     )
-    
+
     # Relationships
     document: Document = Relationship()
-    
+
     # Indexes
-    __table_args__ = (
+    __table_args__: tuple[Index, ...] = (  # type: ignore
         Index("idx_processing_jobs_document", "document_id"),
         Index("idx_processing_jobs_status", "status"),
     )
+
