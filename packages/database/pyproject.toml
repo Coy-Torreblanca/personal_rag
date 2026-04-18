@@ -1,5 +1,5 @@
 [project]
-name = "30ai-database"
+name = "database"
 version = "0.1.0"
 description = "Database models and utilities for 30ai"
 authors = [
@@ -10,11 +10,9 @@ dependencies = [
     "psycopg2-binary>=2.9.0",
     "alembic>=1.12.0",
     "pydantic>=2.0.0",
+    "pgvector>=0.4.2",
 ]
 requires-python = ">=3.11"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src"]
 
 [build-system]
 requires = ["hatchling"]

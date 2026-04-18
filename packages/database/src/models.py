@@ -15,6 +15,9 @@ from sqlmodel import (
 from sqlalchemy import DateTime
 from sqlalchemy.sql import func
 
+# For vector embeddings (if using pgvector)
+from pgvector.sqlalchemy import Vector
+
 
 class DocumentStatus(StrEnum):
     """Document status enum."""
@@ -50,10 +53,12 @@ class Organization(OrganizationBase, table=True):
     __tablename__ = "organizations"  # pyright: ignore[reportUnannotatedClassAttribute, reportAssignmentType]
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    created_at: datetime = Field(
+    created_at: datetime | None = Field(
+        default=None,
         sa_column=Column(DateTime(timezone=True), server_default=func.now()),
     )
-    updated_at: datetime = Field(
+    updated_at: datetime | None = Field(
+        default=None,
         sa_column=Column(
             DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
         ),
@@ -83,10 +88,12 @@ class User(UserBase, table=True):
     __tablename__ = "users"  # pyright: ignore[reportUnannotatedClassAttribute, reportAssignmentType]
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    created_at: datetime = Field(
+    created_at: datetime | None = Field(
+        default=None,
         sa_column=Column(DateTime(timezone=True), server_default=func.now()),
     )
-    updated_at: datetime = Field(
+    updated_at: datetime | None = Field(
+        default=None,
         sa_column=Column(
             DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
         ),
@@ -117,10 +124,12 @@ class Document(DocumentBase, table=True):
     __tablename__ = "documents"
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    created_at: datetime = Field(
+    created_at: datetime | None = Field(
+        default=None,
         sa_column=Column(DateTime(timezone=True), server_default=func.now()),
     )
-    updated_at: datetime = Field(
+    updated_at: datetime | None = Field(
+        default=None,
         sa_column=Column(
             DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
         ),
@@ -148,7 +157,10 @@ class DocumentChunkBase(SQLModel):
     organization_id: UUID = Field(foreign_key="organizations.id", nullable=False)
     chunk_index: int = Field(nullable=False)  # Order of chunk in document
     content: str = Field(sa_column=Column(Text, nullable=False))
-    embedding: str | None = Field(default=None)  # Will be vector type
+    embedding: list[float] | None = Field(
+        default=None,
+        sa_column=Column(Vector(1536)),  # 1536 dimensions for OpenAI embeddings
+    )
     meta_data: dict[str, object] = Field(default={}, sa_column=Column(JSON))
 
 
@@ -159,10 +171,12 @@ class DocumentChunk(DocumentChunkBase, table=True):
     __tablename__ = "document_chunks"
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    created_at: datetime = Field(
+    created_at: datetime | None = Field(
+        default=None,
         sa_column=Column(DateTime(timezone=True), server_default=func.now()),
     )
-    updated_at: datetime = Field(
+    updated_at: datetime | None = Field(
+        default=None,
         sa_column=Column(
             DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
         ),
@@ -176,6 +190,8 @@ class DocumentChunk(DocumentChunkBase, table=True):
     __table_args__: tuple[Index, ...] = (  # type: ignore
         Index("idx_document_chunks_document", "document_id"),
         Index("idx_document_chunks_organization", "organization_id"),
+        # For vector similarity search (uncomment when needed)
+        # Index("idx_document_chunks_embedding", "embedding", postgresql_using="ivfflat", postgresql_with={"lists": 100}),
     )
 
 
@@ -201,10 +217,11 @@ class ProcessingJob(ProcessingJobBase, table=True):
     __tablename__ = "processing_jobs"
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    created_at: datetime = Field(
+    created_at: datetime | None = Field(
+        default=None,
         sa_column=Column(DateTime(timezone=True), server_default=func.now()),
     )
-    updated_at: datetime = Field(
+    updated_at: datetime | None = Field(
         sa_column=Column(
             DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
         ),
@@ -218,4 +235,3 @@ class ProcessingJob(ProcessingJobBase, table=True):
         Index("idx_processing_jobs_document", "document_id"),
         Index("idx_processing_jobs_status", "status"),
     )
-
