@@ -36,14 +36,22 @@ brew install podman-compose
 # Start services
 podman-compose up -d
 
+# Start a specific service.
+podman-compose up -d postgres
+
 # Stop services
 podman-compose down
 
 # View logs
 podman-compose logs -f
+
+# Connect to the database.
+psql -h localhost -p 5432 -U 30ai_user -d 30ai_db
 ```
 
 ## Database Configuration
+
+**Check docker-compose for source of truth**
 
 ### PostgreSQL
 - **Host:** localhost
