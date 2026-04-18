@@ -1,0 +1,104 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: 30ai-postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-30ai_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-30ai_password}
+      POSTGRES_DB: ${DB_NAME:-30ai_db}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-30ai_user} -d ${DB_NAME:-30ai_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - 30ai-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: 30ai-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - 30ai-network
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile.dev
+    container_name: 30ai-api
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-30ai_user}:${DB_PASSWORD:-30ai_password}@postgres:5432/${DB_NAME:-30ai_db}
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=development
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./apps/api:/app
+      - ./packages:/packages
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - 30ai-network
+
+  workers:
+    build:
+      context: ./apps/workers
+      dockerfile: Dockerfile.dev
+    container_name: 30ai-workers
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-30ai_user}:${DB_PASSWORD:-30ai_password}@postgres:5432/${DB_NAME:-30ai_db}
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=development
+    volumes:
+      - ./apps/workers:/app
+      - ./packages:/packages
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - 30ai-network
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile.dev
+    container_name: 30ai-web
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_ENVIRONMENT=development
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./apps/web:/app
+      - /app/node_modules
+    depends_on:
+      - api
+    networks:
+      - 30ai-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  30ai-network:
+    driver: bridge
