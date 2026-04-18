@@ -30,5 +30,10 @@ make lint       # Run linters
 
 ## Database
 
-PostgreSQL with pgvector extension is configured in `docker-compose.yml` (using Podman Compose).
+PostgreSQL with pgvector extension is configured in `docker-compose.yml`.
 Use environment variables for configuration (see `.env.example`).
+
+## Container Runtime
+
+This project uses Podman as the primary container runtime. The Makefile automatically detects
+and uses `podman compose` when available, falling back to `docker-compose` if needed.

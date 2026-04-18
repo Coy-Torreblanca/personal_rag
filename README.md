@@ -150,19 +150,33 @@ make db-down
 make db-reset
 ```
 
-### Using Podman Compose Directly
+### Using Container Compose Directly
 ```bash
+# With Podman (preferred)
 # Start all services in foreground
-podman-compose up
+podman compose up
 
 # Start all services in background
-podman-compose up -d
+podman compose up -d
 
 # View logs
-podman-compose logs -f
+podman compose logs -f
 
 # Stop services
-podman-compose down
+podman compose down
+
+# With Docker
+# Start all services in foreground
+docker-compose up
+
+# Start all services in background
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop services
+docker-compose down
 ```
 
 # Start with rebuild
