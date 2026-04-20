@@ -23,11 +23,6 @@ def create_engine_from_env():
 engine = create_engine_from_env()
 
 
-def init_db():
-    """Initialize database by creating all tables."""
-    SQLModel.metadata.create_all(bind=engine)
-
-
 def get_db() -> Generator[Session, None, None]:
     """Dependency to get database session."""
     db = Session(engine)
@@ -35,3 +30,4 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+

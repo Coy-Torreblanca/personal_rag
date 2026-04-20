@@ -43,6 +43,11 @@ services:
       - DATABASE_URL=postgresql://${DB_USER:-30ai_user}:${DB_PASSWORD:-30ai_password}@postgres:5432/${DB_NAME:-30ai_db}
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=development
+      - R2_ACCOUNT_ID=${R2_ACCOUNT_ID}
+      - R2_S3_API=${R2_S3_API}
+      - R2_TOKEN_VALUE=${R2_TOKEN_VALUE}
+      - R2_ACCESS_ID=${R2_ACCESS_ID}
+      - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}
     ports:
       - "8000:8000"
     volumes:
@@ -51,8 +56,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
+      #redis:
+      #  condition: service_healthy
     networks:
       - 30ai-network
 

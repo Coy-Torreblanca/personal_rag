@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session, select
 
 from packages.database.src.models import Organization, User, Document, ProcessingJob
-from packages.database.src.session import get_db, init_db
+from packages.database.src.session import get_db
 
 # Celery integration
 from celery import Celery
@@ -33,13 +33,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def on_startup():
-    """Initialize database on startup."""
-    init_db()
-    print("Database initialized")
 
 
 @app.get("/")
@@ -94,44 +87,49 @@ async def upload_document(
 ):
     """Upload a document for processing."""
     # Validate file type
-    allowed_types = ["application/pdf", "text/plain", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"]
+    allowed_types = [
+        "application/pdf",
+        "text/plain",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ]
     if file.content_type not in allowed_types:
         raise HTTPException(
-            status_code=400, 
-            detail=f"File type {file.content_type} not supported. Allowed types: {', '.join(allowed_types)}"
+            status_code=400,
+            detail=f"File type {file.content_type} not supported. Allowed types: {', '.join(allowed_types)}",
         )
-    
+
     # Read file content
     content = await file.read()
     file_size = len(content)
-    
+
     # Create document record
     document = Document(
         filename=file.filename,
         file_type=file.content_type,
         file_size=file_size,
-        organization_id=organization_id or UUID("00000000-0000-0000-0000-000000000000"),  # Default org
+        organization_id=organization_id
+        or UUID("00000000-0000-0000-0000-000000000000"),  # Default org
         user_id=user_id or UUID("00000000-0000-0000-0000-000000000000"),  # Default user
         status="uploaded",
         metadata={
             "original_filename": file.filename,
             "content_type": file.content_type,
-        }
+        },
     )
-    
+
     db.add(document)
     db.commit()
     db.refresh(document)
-    
+
     # TODO: Store file in S3
     # For now, we'll just simulate storage
-    
+
     # Trigger background processing
     if background_tasks:
         # In a real implementation, this would call Celery
         # background_tasks.add_task(process_document_task, document.id)
         pass
-    
+
     return {
         "message": "Document uploaded successfully",
         "document_id": str(document.id),
@@ -146,22 +144,21 @@ def process_document(document_id: UUID, db: Session = Depends(get_db)):
     document = db.get(Document, document_id)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
-    
+
     # Check if document is already being processed
     if document.status in ["processing", "processed"]:
         raise HTTPException(
-            status_code=400, 
-            detail=f"Document is already {document.status}"
+            status_code=400, detail=f"Document is already {document.status}"
         )
-    
+
     # Update document status
     document.status = "processing"
     db.add(document)
     db.commit()
-    
+
     # TODO: Send task to Celery worker
     # celery.send_task("process_document", args=[str(document_id)])
-    
+
     return {
         "message": "Document processing started",
         "document_id": str(document_id),
@@ -187,5 +184,6 @@ def get_processing_job(job_id: UUID, db: Session = Depends(get_db)):
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
