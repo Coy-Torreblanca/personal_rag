@@ -18,7 +18,7 @@ def guess_content_type(filename: str, default: str = "application/octet-stream")
 def get_file_type_from_extension(filename: str) -> FileType:
     """Get file type from file extension."""
     ext = Path(filename).suffix.lower()
-    
+
     if ext == ".pdf":
         return FileType.PDF
     elif ext in [".doc", ".docx"]:
@@ -47,27 +47,27 @@ def generate_key(
     timestamp: Optional[datetime] = None,
 ) -> str:
     """Generate a structured key for file storage.
-    
+
     Format: {prefix}/{organization_id}/{user_id}/{timestamp}/{filename}
     """
     parts = []
-    
+
     if prefix:
         parts.append(prefix.strip("/"))
-    
+
     if organization_id:
         parts.append(organization_id)
-    
+
     if user_id:
         parts.append(user_id)
-    
+
     if timestamp:
         # Format: YYYY/MM/DD/HHMMSS
         parts.append(timestamp.strftime("%Y/%m/%d/%H%M%S"))
-    
+
     # Add filename
     parts.append(os.path.basename(filename))
-    
+
     return "/".join(parts)
 
 
@@ -75,10 +75,10 @@ def parse_key(key: str) -> Dict[str, str]:
     """Parse a structured key into its components."""
     parts = key.split("/")
     result = {}
-    
+
     if len(parts) >= 1:
         result["filename"] = parts[-1]
-    
+
     if len(parts) >= 2:
         # Try to parse timestamp from second-to-last part
         timestamp_part = parts[-2]
@@ -88,16 +88,16 @@ def parse_key(key: str) -> Dict[str, str]:
                 result["timestamp"] = timestamp_part
         except:
             pass
-    
+
     if len(parts) >= 3:
         result["user_id"] = parts[-3]
-    
+
     if len(parts) >= 4:
         result["organization_id"] = parts[-4]
-    
+
     if len(parts) >= 5:
         result["prefix"] = "/".join(parts[:-4])
-    
+
     return result
 
 
@@ -117,24 +117,25 @@ def sanitize_filename(filename: str) -> str:
     """Sanitize filename for safe storage."""
     # Remove path traversal attempts
     filename = os.path.basename(filename)
-    
+
     # Replace problematic characters
-    problematic_chars = ['\\', '/', ':', '*', '?', '"', '<', '>', '|']
+    problematic_chars = ["\\", "/", ":", "*", "?", '"', "<", ">", "|"]
     for char in problematic_chars:
-        filename = filename.replace(char, '_')
-    
+        filename = filename.replace(char, "_")
+
     # Limit length
     if len(filename) > 255:
         name, ext = os.path.splitext(filename)
-        filename = name[:255 - len(ext)] + ext
-    
+        filename = name[: 255 - len(ext)] + ext
+
     return filename
 
 
 def format_file_size(size_bytes: int) -> str:
     """Format file size in human-readable format."""
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
         if size_bytes < 1024.0:
             return f"{size_bytes:.2f} {unit}"
-        size_bytes /= 1024.0
+        size_bytes /= 1024.0  # pyright: ignore[reportAssignmentType]
     return f"{size_bytes:.2f} PB"
+

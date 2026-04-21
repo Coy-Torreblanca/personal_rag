@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, cast
+from typing import Any, cast, Optional, List
 from enum import Enum
 
 
@@ -104,20 +104,18 @@ class FileMetadata:
     metadata: dict[str, str] | None
 
     @classmethod
-    def from_s3_upload_response(
+    def from_s3_object_response(
         cls,
         response: dict[str, Any],
         bucket: str,
-        content_type: str,
         key: str,
-        metadata: dict[str, str] | None,
     ) -> "FileMetadata":
-        """Create FileMetadata from S3 response."""
-        # Determine file type from content type or extension
-        file_type = get_file_type_from_content_type(content_type)
-
-        etag = cast(str, response.get("Etag", ""))
-        size = cast(int, response.get("Size", 0))
+        """Create FileMetadata from S3 object response (get_object, head_object)."""
+        content_type = cast(str, response.get("ContentType", ""))
+        metadata = cast(dict[str, str] | None, response.get("Metadata"))
+        size = cast(int, response.get("ContentLength", 0))
+        etag = cast(str, response.get("ETag", ""))
+        last_modified = cast(datetime | None, response.get("LastModified"))
         file_type = get_file_type_from_content_type(content_type)
 
         return cls(
@@ -125,10 +123,55 @@ class FileMetadata:
             bucket=bucket,
             size=size,
             content_type=content_type,
+            last_modified=last_modified,
             etag=etag,
             file_type=file_type,
-            last_modified=datetime.now(),
             metadata=metadata,
+        )
+
+    @classmethod
+    def from_s3_list_object(
+        cls,
+        obj: dict[str, Any],
+        bucket: str,
+    ) -> "FileMetadata":
+        """Create FileMetadata from S3 list objects response."""
+        key = cast(str, obj.get("Key", ""))
+        size = cast(int, obj.get("Size", 0))
+        etag = cast(str, obj.get("ETag", ""))
+        last_modified = cast(datetime | None, obj.get("LastModified"))
+
+        # For list objects, we don't have content_type or metadata
+        # We can try to infer file type from key extension
+        content_type = ""
+        file_type = FileType.OTHER
+        if "." in key:
+            ext = key.split(".")[-1].lower()
+            if ext in ["pdf"]:
+                content_type = "application/pdf"
+                file_type = FileType.PDF
+            elif ext in ["txt", "md", "html", "xml"]:
+                content_type = "text/plain"
+                file_type = FileType.TXT
+            elif ext in ["json"]:
+                content_type = "application/json"
+                file_type = FileType.JSON
+            elif ext in ["csv"]:
+                content_type = "text/csv"
+                file_type = FileType.CSV
+            elif ext in ["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp"]:
+                content_type = "image/jpeg"
+                file_type = FileType.IMAGE
+
+        return cls(
+            key=key,
+            bucket=bucket,
+            size=size,
+            content_type=content_type,
+            last_modified=last_modified,
+            etag=etag,
+            file_type=file_type,
+            metadata=None,
         )
 
 
@@ -201,7 +244,10 @@ class DeleteResponse:
     success: bool
     key: str
     bucket: str
-    message: Optional[str] = None
+    version_id: str
+    delete_marker: bool
+    request_charged: str | None = None
+    message: str | None = None
 
 
 @dataclass

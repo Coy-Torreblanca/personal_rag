@@ -2,8 +2,7 @@
 
 import boto3
 from botocore.exceptions import ClientError
-from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Any
 
 from .config import R2Config
 from .exceptions import (
@@ -24,7 +23,6 @@ from .models import (
     ListResponse,
     DeleteResponse,
     PresignedUrlResponse,
-    FileType,
 )
 
 
@@ -32,28 +30,30 @@ class R2Client:
     """Client for Cloudflare R2 operations."""
 
     config: R2Config
+    _client: Any | None
+    _resource: Any | None
 
-    def __init__(self, config: R2Config):
-        self.config = config
+    def __init__(self, bucket_name: str):
+        self.config = R2Config.from_env(bucket_name=bucket_name)
         self._client = None
         self._resource = None
-        config.validate()
+        self.config.validate()
 
     @property
-    def client(self):
+    def client(self) -> Any:
         """Lazy-loaded boto3 client."""
         if self._client is None:
             self._client = self._create_client()
         return self._client
 
     @property
-    def resource(self):
+    def resource(self) -> Any:
         """Lazy-loaded boto3 resource."""
         if self._resource is None:
             self._resource = self._create_resource()
         return self._resource
 
-    def _create_client(self):
+    def _create_client(self) -> Any:
         """Create boto3 client for R2."""
         return boto3.client(
             "s3",
@@ -63,7 +63,7 @@ class R2Client:
             endpoint_url=self.config.endpoint_url,
         )
 
-    def _create_resource(self):
+    def _create_resource(self) -> Any:
         """Create boto3 resource for R2."""
         return boto3.resource(
             "s3",
@@ -73,7 +73,7 @@ class R2Client:
             endpoint_url=self.config.endpoint_url,
         )
 
-    def validate_bucket(self, bucket_name: Optional[str] = None) -> str:
+    def validate_bucket(self, bucket_name: str | None = None) -> str:
         """Validate and return bucket name."""
         bucket = bucket_name or self.config.bucket_name
         if not bucket:
@@ -82,8 +82,8 @@ class R2Client:
 
     def _handle_client_error(self, error: ClientError, operation: str) -> None:
         """Handle boto3 ClientError and raise appropriate exception."""
-        error_code = error.response.get("Error", {}).get("Code", "")
-        error_message = error.response.get("Error", {}).get("Message", "")
+        error_code: str = error.response.get("Error", {}).get("Code", "")
+        error_message: str = error.response.get("Error", {}).get("Message", "")
 
         if error_code == "NoSuchBucket":
             raise BucketError(f"Bucket does not exist: {error_message}")
@@ -112,7 +112,7 @@ class R2Client:
         bucket_name: str,
         content_type: str,
         metadata: dict[str, str] | None = None,
-    ) -> UploadResponse | None:
+    ) -> UploadResponse:
         """Upload a file from local path."""
         bucket = self.validate_bucket(bucket_name)
 
@@ -123,16 +123,22 @@ class R2Client:
             if metadata:
                 extra_args["Metadata"] = metadata
 
-            response  = self.client.upload_file(file_path, bucket, key, ExtraArgs=extra_args)
+            # upload_file doesn't return a response, so we need to get metadata separately
+            self.client.upload_file(file_path, bucket, key, ExtraArgs=extra_args)
 
-            file_metadata = FileMetadata.from_s3_upload_response(response, bucket, content_type, key, metadata)
+            # Get the uploaded file metadata
+            response = self.client.head_object(Bucket=bucket, Key=key)
 
-            return UploadResponse(
-                metadata=file_metadata,
-                success=True
+            file_metadata = FileMetadata.from_s3_object_response(
+                response=response,
+                bucket=bucket,
+                key=key,
             )
+
+            return UploadResponse(metadata=file_metadata, success=True)
         except ClientError as e:
             self._handle_client_error(e, "Upload")
+            raise
         except Exception as e:
             raise UploadError(f"Upload failed: {str(e)}") from e
 
@@ -140,10 +146,10 @@ class R2Client:
         self,
         data: bytes,
         key: str,
-        bucket_name: Optional[str] = None,
-        content_type: Optional[str] = None,
-        metadata: Optional[Dict[str, str]] = None,
-    ) -> UploadResponse | None:
+        bucket_name: str | None = None,
+        content_type: str | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> UploadResponse:
         """Upload bytes data."""
         bucket = self.validate_bucket(bucket_name)
 
@@ -154,28 +160,21 @@ class R2Client:
             if metadata:
                 extra_args["Metadata"] = metadata
 
-            response: dict[str, Any] = self.client.put_object(
-                Bucket=bucket, Key=key, Body=data, **extra_args
-            )
+            self.client.put_object(Bucket=bucket, Key=key, Body=data, **extra_args)
 
-            etag: str | None = response.get("ETag")
-            size: int | None = response.get("Size")
+            # put_object returns minimal response, need to get full metadata
+            head_response = self.client.head_object(Bucket=bucket, Key=key)
 
-            if not etag or not size:
-                raise ValueError(f"response did have required data: {response!r}")
-
-            FileMetadata = 
-
-            return UploadResponse(
-                key=key,
+            file_metadata = FileMetadata.from_s3_object_response(
+                response=head_response,
                 bucket=bucket,
-                metadata=metadata or {},
-                etag=etag,
-                size=size,
-                success=True,
+                key=key,
             )
+
+            return UploadResponse(metadata=file_metadata, success=True)
         except ClientError as e:
             self._handle_client_error(e, "Upload")
+            raise
         except Exception as e:
             raise UploadError(f"Upload failed: {str(e)}") from e
 
@@ -183,7 +182,7 @@ class R2Client:
         self,
         key: str,
         file_path: str,
-        bucket_name: Optional[str] = None,
+        bucket_name: str | None = None,
     ) -> DownloadResponse:
         """Download a file to local path."""
         bucket = self.validate_bucket(bucket_name)
@@ -193,27 +192,31 @@ class R2Client:
 
             # Get object metadata
             response = self.client.head_object(Bucket=bucket, Key=key)
-            metadata = response.get("Metadata", {})
-            content_type = response.get("ContentType")
-            size = response.get("ContentLength", 0)
+            file_metadata = FileMetadata.from_s3_object_response(
+                response=response,
+                bucket=bucket,
+                key=key,
+            )
+
+            # Read the downloaded file content
+            with open(file_path, "rb") as f:
+                content = f.read()
 
             return DownloadResponse(
-                key=key,
-                bucket=bucket,
-                file_path=file_path,
-                metadata=metadata,
-                content_type=content_type,
-                size=size,
+                success=True,
+                content=content,
+                metadata=file_metadata,
             )
         except ClientError as e:
             self._handle_client_error(e, "Download")
+            raise
         except Exception as e:
             raise DownloadError(f"Download failed: {str(e)}") from e
 
     def download_bytes(
         self,
         key: str,
-        bucket_name: Optional[str] = None,
+        bucket_name: str | None = None,
     ) -> DownloadResponse:
         """Download file as bytes."""
         bucket = self.validate_bucket(bucket_name)
@@ -222,114 +225,137 @@ class R2Client:
             response = self.client.get_object(Bucket=bucket, Key=key)
             data = response["Body"].read()
 
-            metadata = response.get("Metadata", {})
-            content_type = response.get("ContentType")
-            size = len(data)
+            file_metadata = FileMetadata.from_s3_object_response(
+                response=response,
+                bucket=bucket,
+                key=key,
+            )
 
             return DownloadResponse(
-                key=key,
-                bucket=bucket,
-                data=data,
-                metadata=metadata,
-                content_type=content_type,
-                size=size,
+                success=True,
+                content=data,
+                metadata=file_metadata,
             )
         except ClientError as e:
             self._handle_client_error(e, "Download")
+            raise
         except Exception as e:
             raise DownloadError(f"Download failed: {str(e)}") from e
 
     def delete_file(
         self,
         key: str,
-        bucket_name: Optional[str] = None,
+        bucket_name: str | None = None,
     ) -> DeleteResponse:
         """Delete a file."""
         bucket = self.validate_bucket(bucket_name)
 
         try:
-            self.client.delete_object(Bucket=bucket, Key=key)
+            response = self.client.delete_object(Bucket=bucket, Key=key)
+
+            # Parse delete response
+            version_id = response.get("VersionId")
+            delete_marker = response.get("DeleteMarker", False)
+            request_charged = response.get("RequestCharged")
 
             return DeleteResponse(
+                success=True,
                 key=key,
                 bucket=bucket,
-                deleted=True,
+                message=f"File deleted successfully{', version: ' + version_id if version_id else ''}",
+                version_id=version_id,
+                delete_marker=delete_marker,
             )
         except ClientError as e:
             self._handle_client_error(e, "Delete")
+            raise
         except Exception as e:
             raise DeleteError(f"Delete failed: {str(e)}") from e
 
     def list_files(
         self,
-        prefix: Optional[str] = None,
-        bucket_name: Optional[str] = None,
+        prefix: str | None = None,
+        bucket_name: str | None = None,
         max_keys: int = 1000,
+        continuation_token: str | None = None,
     ) -> ListResponse:
         """List files in bucket."""
         bucket = self.validate_bucket(bucket_name)
 
         try:
-            paginator = self.client.get_paginator("list_objects_v2")
-            files = []
+            params = {"Bucket": bucket, "Prefix": prefix or "", "MaxKeys": max_keys}
 
-            for page in paginator.paginate(
-                Bucket=bucket,
-                Prefix=prefix or "",
-                PaginationConfig={"MaxItems": max_keys},
-            ):
-                for obj in page.get("Contents", []):
-                    files.append(
-                        FileMetadata(
-                            key=obj["Key"],
-                            size=obj["Size"],
-                            last_modified=obj["LastModified"],
-                            etag=obj["ETag"],
-                        )
-                    )
+            if continuation_token:
+                params["ContinuationToken"] = continuation_token
+
+            response = self.client.list_objects_v2(**params)
+
+            files = [
+                FileMetadata.from_s3_list_object(obj=obj, bucket=bucket)
+                for obj in response.get("Contents", [])
+            ]
+            is_truncated = response.get("IsTruncated", False)
+            continuation_token = response.get("NextContinuationToken")
 
             return ListResponse(
+                success=True,
                 bucket=bucket,
-                prefix=prefix,
                 files=files,
-                count=len(files),
+                prefix=prefix,
+                continuation_token=continuation_token,
+                is_truncated=is_truncated,
             )
         except ClientError as e:
             self._handle_client_error(e, "List")
+            raise
         except Exception as e:
-            raise ListError(f"List failed: {str(e)}") from e
+            raise ListError(f"List failed for prefix '{prefix}': {str(e)}") from e
 
     def generate_presigned_url(
         self,
         key: str,
         expiration: int = 3600,
-        bucket_name: Optional[str] = None,
+        bucket_name: str | None = None,
+        method: str = "GET",
+        inline: bool = False,
     ) -> PresignedUrlResponse:
         """Generate a presigned URL for temporary access."""
         bucket = self.validate_bucket(bucket_name)
 
         try:
+            # Map method to appropriate client method
+            client_method = "get_object" if method.upper() == "GET" else "put_object"
+
+            params = {"Bucket": bucket, "Key": key}
+
+            if inline:
+                params["ResponseContentDisposition"] = "inline"
+
             url = self.client.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": bucket, "Key": key},
+                client_method,
+                Params=params,
                 ExpiresIn=expiration,
             )
 
             return PresignedUrlResponse(
+                success=True,
                 key=key,
                 bucket=bucket,
                 url=url,
-                expiration=expiration,
+                expires_in=expiration,
+                method=method.upper(),
+                message=f"Presigned URL generated for {method.upper()} operation",
             )
         except ClientError as e:
             self._handle_client_error(e, "Generate presigned URL")
+            raise
         except Exception as e:
             raise PresignedUrlError(f"Generate presigned URL failed: {str(e)}") from e
 
     def file_exists(
         self,
         key: str,
-        bucket_name: Optional[str] = None,
+        bucket_name: str | None = None,
     ) -> bool:
         """Check if a file exists."""
         bucket = self.validate_bucket(bucket_name)
