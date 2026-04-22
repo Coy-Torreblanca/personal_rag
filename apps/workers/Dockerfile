@@ -1,3 +1,6 @@
+# ==========================================
+# STAGE 1: The Builder
+# ==========================================
 FROM python:3.11-slim as builder
 
 WORKDIR /app
@@ -11,7 +14,9 @@ COPY pyproject.toml uv.lock ./
 # Install dependencies
 RUN uv sync --frozen --no-dev
 
-# Production stage
+# ==========================================
+# STAGE 2: Production
+# ==========================================
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -19,15 +24,19 @@ WORKDIR /app
 # Create non-root user
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
-# Install system dependencies for AI libraries
+# Install system dependencies for AI libraries (if still needed here)
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Python dependencies from builder
-COPY --from=builder /app/.venv .venv
+# Copy Python dependencies from the builder stage above
+COPY --from=builder /app/.venv /app/.venv
+
+# Set environment variables so Python uses the virtual environment
 ENV PATH="/app/.venv/bin:$PATH"
+ENV VIRTUAL_ENV="/app/.venv"
+ENV PYTHONUNBUFFERED=1
 
 # Copy application code
 COPY . .
@@ -38,9 +47,9 @@ RUN mkdir -p /app/logs && chown -R appuser:appuser /app
 # Switch to non-root user
 USER appuser
 
-# Health check
+# Health check using the python module flag
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD celery -A src.main.celery inspect ping -d celery@$HOSTNAME || exit 1
+    CMD python -m celery -A src.main.celery inspect ping -d celery@$HOSTNAME || exit 1
 
-# Run Celery worker
-CMD ["celery", "-A", "src.main.celery", "worker", "--loglevel=info"]
+# Run Celery worker using the python module flag
+CMD ["python", "-m", "celery", "-A", "src.main.celery", "worker", "--loglevel=info"]

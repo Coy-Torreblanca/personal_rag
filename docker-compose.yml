@@ -37,7 +37,7 @@ services:
   api:
     build:
       context: ./apps/api
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     container_name: 30ai-api
     environment:
       - DATABASE_URL=postgresql://${DB_USER:-30ai_user}:${DB_PASSWORD:-30ai_password}@postgres:5432/${DB_NAME:-30ai_db}
@@ -56,18 +56,17 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      #redis:
-      #  condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - 30ai-network
 
   workers:
     build:
       context: ./apps/workers
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     container_name: 30ai-workers
     environment:
-      - DATABASE_URL=postgresql://${DB_USER:-30ai_user}:${DB_PASSWORD:-30ai_password}@postgres:5432/${DB_NAME:-30ai_db}
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=development
     volumes:
@@ -84,7 +83,7 @@ services:
   web:
     build:
       context: ./apps/web
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     container_name: 30ai-web
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
