@@ -19,7 +19,7 @@ DocParse is a small, container-hosted application that ingests documents of vari
 docker build -t docparse:latest .
 
 # Run the container
-docker run -p 8001:8001 -v /path/to/documents:/documents docparse:latest
+docker run -p 8001:8001 docparse:latest
 ```
 
 Access the API at http://localhost:8001/docs
@@ -49,14 +49,14 @@ curl http://localhost:8001/health
 ```bash
 curl -X POST http://localhost:8001/parse \
   -H "Content-Type: application/json" \
-  -d '{"file_path": "/documents/example.pdf"}'
+  -d '{"s3_presigned_http_url": "https://bucket.s3.amazonaws.com/documents/example.pdf?AWSAccessKeyId=..."}'
 ```
 
 Response:
 ```json
 {
   "markdown": "# Document Title\n\nDocument content...",
-  "file_path": "/documents/example.pdf"
+  "s3_presigned_http_url": "https://bucket.s3.amazonaws.com/documents/example.pdf?AWSAccessKeyId=..."
 }
 ```
 
@@ -94,10 +94,11 @@ The application uses an abstract provider pattern:
 
 ```python
 from src.providers import BaseProvider
+from pydantic import HttpUrl
 
 class CustomProvider(BaseProvider):
-    async def parse_document(self, file_path: Path) -> str:
-        # Your implementation
+    async def parse_document(self, s3_presigned_http_url: HttpUrl) -> str:
+        # Your implementation - download and parse from S3 URL
         pass
     
     def get_supported_formats(self) -> list[str]:

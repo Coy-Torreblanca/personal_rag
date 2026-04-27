@@ -1,26 +1,27 @@
 """Base provider interface for document parsing."""
 
 from abc import ABC, abstractmethod
-from pathlib import Path
+
+from pydantic import HttpUrl
 
 
 class BaseProvider(ABC):
     """Abstract base class for document parsing providers."""
 
     @abstractmethod
-    async def parse_document(self, file_path: Path) -> str:
+    async def parse_document(self, s3_presigned_http_url: HttpUrl) -> str:
         """
-        Parse a document and return its content in markdown format.
+        Parse a document from S3 and return its content in markdown format.
 
         Args:
-            file_path: Path to the document file to parse
+            s3_presigned_http_url: S3 presigned URL to download the document
 
         Returns:
             Document content in markdown format
 
         Raises:
-            FileNotFoundError: If the file does not exist
-            ValueError: If the file format is not supported
+            FileNotFoundError: If the document cannot be retrieved from S3
+            ValueError: If the document format is not supported
             Exception: For other parsing errors
         """
         pass

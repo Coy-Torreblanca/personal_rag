@@ -1,15 +1,15 @@
 """API models for DocParse."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl
 
 
 class ParseRequest(BaseModel):
     """Request model for document parsing."""
 
-    file_path: str = Field(
+    s3_presigned_http_url: HttpUrl = Field(
         ...,
-        description="Absolute or relative path to the document file",
-        examples=["/path/to/document.pdf", "./document.docx"],
+        description="Presigned URL to download file from S3.",
+        examples=["https://bucket.s3.amazonaws.com/document.pdf?AWSAccessKeyId=...", "https://bucket.s3.amazonaws.com/document.docx?AWSAccessKeyId=..."],
     )
 
 
@@ -20,9 +20,9 @@ class ParseResponse(BaseModel):
         ...,
         description="Document content in markdown format",
     )
-    file_path: str = Field(
+    s3_presigned_http_url: HttpUrl = Field(
         ...,
-        description="Path to the parsed document",
+        description="S3 presigned URL of the parsed document",
     )
 
 

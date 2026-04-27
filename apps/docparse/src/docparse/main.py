@@ -2,7 +2,6 @@
 
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -99,13 +98,13 @@ async def parse_document(request: ParseRequest) -> ParseResponse:
     Parse a document and return markdown content.
 
     Args:
-        request: ParseRequest containing the file path
+        request: ParseRequest containing the S3 presigned URL
 
     Returns:
-        ParseResponse with markdown content
+        ParseResponse with markdown content and S3 presigned URL
 
     Raises:
-        HTTPException: If file not found, format not supported, or parsing fails
+        HTTPException: If URL is invalid, format not supported, or parsing fails
     """
     if provider is None:
         raise HTTPException(
@@ -113,25 +112,21 @@ async def parse_document(request: ParseRequest) -> ParseResponse:
             detail="Provider not initialized",
         )
 
-    file_path = Path(request.file_path)
-
+    url = request.s3_presigned_http_url
     try:
-        markdown_content = await provider.parse_document(file_path)
+        markdown_content = await provider.parse_document(url)
 
-        return ParseResponse(
-            markdown=markdown_content,
-            file_path=str(file_path),
-        )
+        return ParseResponse(markdown=markdown_content, s3_presigned_http_url=url)
 
     except FileNotFoundError as e:
-        logger.error(f"File not found: {file_path}")
+        logger.error(f"Document not found at S3 URL: {url}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e),
         )
 
     except ValueError as e:
-        logger.error(f"Invalid file format: {file_path}")
+        logger.error(f"Invalid document format from S3 URL: {url}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
