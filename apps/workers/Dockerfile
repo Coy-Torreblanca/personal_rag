@@ -12,6 +12,10 @@ RUN pip install uv
 COPY pyproject.toml uv.lock ./
 
 # Install dependencies
+# CRITICAL FIX: Force uv to copy files, not symlink them to a cache
+ENV UV_LINK_MODE=copy
+# Best practice: pre-compile python to bytecode for faster startup
+ENV UV_COMPILE_BYTECODE=1
 RUN uv sync --frozen --no-dev
 
 # ==========================================
@@ -52,4 +56,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD python -m celery -A src.main.celery inspect ping -d celery@$HOSTNAME || exit 1
 
 # Run Celery worker using the python module flag
-CMD ["python", "-m", "celery", "-A", "src.main.celery", "worker", "--loglevel=info"]
+CMD ["/app/.venv/bin/python", "-m", "celery", "-A", "src.main.celery", "worker", "--loglevel=info"]

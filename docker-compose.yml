@@ -52,6 +52,7 @@ services:
       - "8000:8000"
     volumes:
       - ./apps/api:/app
+      - /app/.venv
       - ./packages:/packages
     depends_on:
       postgres:
@@ -71,6 +72,7 @@ services:
       - ENVIRONMENT=development
     volumes:
       - ./apps/workers:/app
+      - /app/.venv
       - ./packages:/packages
     depends_on:
       postgres:
