@@ -3,6 +3,7 @@
 import logging
 
 from docling.document_converter import DocumentConverter
+from pydantic import HttpUrl
 
 from .base import BaseProvider
 
@@ -17,7 +18,7 @@ class DoclingProvider(BaseProvider):
         self.converter = DocumentConverter()
         logger.info("DoclingProvider initialized")
 
-    async def parse_document(self, s3_presigned_http_url: str) -> str:
+    async def parse_document(self, s3_presigned_http_url: HttpUrl) -> str:
         """
         Parse a document from S3 using Docling and return markdown content.
 
@@ -34,10 +35,10 @@ class DoclingProvider(BaseProvider):
         """
 
         try:
-            logger.info(f"Parsing document from S3 URL")
+            logger.info("Parsing document from S3 URL")
 
             # Convert the document directly from the S3 URL
-            result = self.converter.convert(s3_presigned_http_url)
+            result = self.converter.convert(str(s3_presigned_http_url))
 
             # Export to markdown
             markdown_content = result.document.export_to_markdown()
