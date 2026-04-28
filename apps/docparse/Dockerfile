@@ -1,25 +1,57 @@
+# STAGE 1: The Builder
+# ==========================================
+FROM python:3.11-slim as builder
+
+WORKDIR /app
+
+# Install uv for fast dependency management
+RUN pip install uv
+
+# Copy dependency files
+COPY pyproject.toml uv.lock ./
+
+# Install dependencies
+# CRITICAL FIX: Force uv to copy files, not symlink them to a cache
+ENV UV_LINK_MODE=copy
+# Best practice: pre-compile python to bytecode for faster startup
+ENV UV_COMPILE_BYTECODE=1
+RUN uv sync --frozen --no-dev
+
+# ==========================================
+# STAGE 2: Production
+# ==========================================
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies required for docling
+# Create non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Install system dependencies for AI libraries (if still needed here)
 RUN apt-get update && apt-get install -y \
-    build-essential \
-    git \
+    gcc \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv for faster dependency management
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# Copy Python dependencies from the builder stage above
+COPY --from=builder /app/.venv /app/.venv
 
-# Copy project files
-COPY pyproject.toml ./
-COPY src ./src
+# Set environment variables so Python uses the virtual environment
+ENV PATH="/app/.venv/bin:$PATH"
+ENV VIRTUAL_ENV="/app/.venv"
+ENV PYTHONUNBUFFERED=1
 
-# Install dependencies
-RUN uv pip install --system --no-cache -e .
+# Copy application code
+COPY . .
+
+# Create necessary directories
+RUN mkdir -p /app/logs && chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
 
 # Expose port
 EXPOSE 8001
 
 # Run the application
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["uvicorn", "src.docparse.main:app", "--host", "0.0.0.0", "--port", "8001"]

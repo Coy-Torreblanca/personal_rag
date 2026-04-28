@@ -2,7 +2,6 @@
 name = "docparse"
 version = "0.1.0"
 description = "A container-hosted application that ingests documents and outputs markdown text"
-readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
@@ -21,10 +20,6 @@ dev = [
     "httpx>=0.27.0",
     "ruff>=0.6.0",
 ]
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
 
 [tool.ruff]
 line-length = 100

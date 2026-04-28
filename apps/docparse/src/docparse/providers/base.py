@@ -35,16 +35,3 @@ class BaseProvider(ABC):
             List of supported file extensions (e.g., ['pdf', 'docx', 'txt'])
         """
         pass
-
-    def is_supported(self, file_path: Path) -> bool:
-        """
-        Check if a file format is supported.
-
-        Args:
-            file_path: Path to the file to check
-
-        Returns:
-            True if the file format is supported, False otherwise
-        """
-        extension = file_path.suffix.lstrip(".").lower()
-        return extension in self.get_supported_formats()
