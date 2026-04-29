@@ -1,0 +1,55 @@
+# Virtual environments
+**/.venv/
+**/venv/
+**/env/
+**/ENV/
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info
+dist
+build
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git
+.git
+.gitignore
+
+# Testing
+.pytest_cache
+.coverage
+htmlcov
+
+# Node (if applicable)
+node_modules
+npm-debug.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile
+.dockerignore
+
+# CI/CD
+.github
+.gitlab-ci.yml
+
+# Misc
+.env
+.env.local
+*.log

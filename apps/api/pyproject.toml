@@ -21,6 +21,8 @@ dependencies = [
     "unstructured>=0.10.0",
     "boto3>=1.28.0",
     "clerk-sdk>=0.1.0",
+    "s3",
+    "database",
 ]
 requires-python = ">=3.11"
 
@@ -43,6 +45,8 @@ build-backend = "hatchling.build"
 "30ai-database" = { path = "../../packages/database" }
 "30ai-ai" = { path = "../../packages/ai" }
 "30ai-config" = { path = "../../packages/config" }
+s3 = { path = "../../packages/s3", editable = true }
+database = { path = "../../packages/database", editable = true }
 
 [tool.ruff]
 target-version = "py311"

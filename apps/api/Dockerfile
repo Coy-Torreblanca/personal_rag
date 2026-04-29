@@ -5,11 +5,16 @@ WORKDIR /app
 # Install uv for fast dependency management
 RUN pip install uv
 
-# Copy dependency files
-COPY pyproject.toml uv.lock ./
+# Copy the entire project structure to maintain relative paths
+COPY apps/api apps/api
+COPY packages packages
 
-# Install dependencies
-RUN uv sync --frozen --no-dev
+# Install dependencies from the api directory
+# CRITICAL FIX: Force uv to copy files, not symlink them to a cache
+ENV UV_LINK_MODE=copy
+# Best practice: pre-compile python to bytecode for faster startup
+ENV UV_COMPILE_BYTECODE=1
+RUN cd apps/api && uv sync --frozen --no-dev
 
 # Production stage
 FROM python:3.11-slim
@@ -20,11 +25,13 @@ WORKDIR /app
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
 # Copy Python dependencies from builder
-COPY --from=builder /app/.venv .venv
+COPY --from=builder /app/apps/api/.venv .venv
 ENV PATH="/app/.venv/bin:$PATH"
+ENV VIRTUAL_ENV="/app/.venv"
+ENV PYTHONUNBUFFERED=1
 
 # Copy application code
-COPY . .
+COPY apps/api/src ./src
 
 # Create necessary directories
 RUN mkdir -p /app/logs && chown -R appuser:appuser /app
@@ -40,4 +47,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Run the application
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
