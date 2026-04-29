@@ -6,8 +6,9 @@ from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Backgroun
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session, select
 
-from packages.database.src.models import Organization, User, Document, ProcessingJob
-from packages.database.src.session import get_db
+from database.models import Organization, User, Document, ProcessingJob
+from database.session import get_db
+from s3_routes import router as s3_router
 
 # Celery integration
 from celery import Celery
@@ -33,6 +34,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include S3 routes
+app.include_router(s3_router)
 
 
 @app.get("/")
@@ -80,8 +84,8 @@ def get_documents(db: Session = Depends(get_db)):
 @app.post("/documents/upload")
 async def upload_document(
     file: UploadFile = File(...),
-    organization_id: UUID = None,
-    user_id: UUID = None,
+    organization_id: UUID | None = None,
+    user_id: UUID | None = None,
     db: Session = Depends(get_db),
     background_tasks: BackgroundTasks = None,
 ):
@@ -121,8 +125,34 @@ async def upload_document(
     db.commit()
     db.refresh(document)
 
-    # TODO: Store file in S3
-    # For now, we'll just simulate storage
+    # Store file in S3
+    from packages.s3.src.s3 import R2Client
+    from packages.s3.src.s3.exceptions import S3Error
+
+    s3_key = None
+    try:
+        org_id = organization_id or UUID("00000000-0000-0000-0000-000000000000")
+        s3_client = R2Client(bucket_name=os.getenv("S3_BUCKET_NAME", "documents"))
+        s3_key = f"documents/{org_id}/{document.id}/{file.filename}"
+
+        s3_response = s3_client.upload_bytes(
+            data=content,
+            key=s3_key,
+            content_type=file.content_type,
+            metadata={
+                "document_id": str(document.id),
+                "organization_id": str(org_id),
+            },
+        )
+
+        document.metadata["s3_key"] = s3_key
+        document.metadata["s3_bucket"] = s3_response.metadata.bucket
+        db.add(document)
+        db.commit()
+    except S3Error as e:
+        document.metadata["s3_error"] = str(e)
+        db.add(document)
+        db.commit()
 
     # Trigger background processing
     if background_tasks:
@@ -135,6 +165,8 @@ async def upload_document(
         "document_id": str(document.id),
         "filename": document.filename,
         "status": document.status,
+        "s3_key": s3_key,
+        "file_size": file_size,
     }
 
 
@@ -186,4 +218,3 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

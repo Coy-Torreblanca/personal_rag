@@ -45,8 +45,8 @@ build-backend = "hatchling.build"
 "30ai-database" = { path = "../../packages/database" }
 "30ai-ai" = { path = "../../packages/ai" }
 "30ai-config" = { path = "../../packages/config" }
-s3 = { path = "../../packages/s3", editable = true }
-database = { path = "../../packages/database", editable = true }
+s3 = { path = "../../packages/s3"}
+database = { path = "../../packages/database"}
 
 [tool.ruff]
 target-version = "py311"
