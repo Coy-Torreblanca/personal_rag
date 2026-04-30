@@ -8,7 +8,7 @@ from sqlmodel import Session, select
 
 from database.models import Organization, User, Document, ProcessingJob
 from database.session import get_db
-from s3_routes import router as s3_router
+from .s3_routes import router as s3_router
 
 # Celery integration
 from celery import Celery

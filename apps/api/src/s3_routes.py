@@ -1,10 +1,11 @@
 """S3/R2 CRUD operations routes for the API."""
 
 import io
+import json
 import os
-from typing import Optional, List
+from typing import Annotated, Optional, List
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Form, HTTPException, UploadFile, File, Query
 from s3 import R2Client
 from s3.exceptions import S3Error
 
@@ -69,46 +70,6 @@ async def upload_file(
             "last_modified": response.metadata.last_modified.isoformat()
             if response.metadata.last_modified
             else None,
-        }
-    except S3Error as e:
-        raise HTTPException(status_code=400, detail=f"S3 operation failed: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
-
-
-@router.post("/upload-bytes")
-async def upload_bytes(
-    key: str = Query(...),
-    bucket_name: Optional[str] = Query(None),
-    content_type: Optional[str] = Query(None),
-    file: UploadFile = File(...),
-):
-    """
-    Upload raw bytes to S3/R2.
-
-    - **key**: S3 object key/path (required)
-    - **bucket_name**: Target bucket name
-    - **content_type**: MIME type of the content
-    - **file**: The file to upload
-    """
-    try:
-        client = get_s3_client(bucket_name)
-
-        content = await file.read()
-
-        response = client.upload_bytes(
-            data=content,
-            key=key,
-            bucket_name=bucket_name,
-            content_type=content_type or file.content_type,
-        )
-
-        return {
-            "success": True,
-            "message": "Bytes uploaded successfully",
-            "bucket": response.metadata.bucket,
-            "key": response.metadata.key,
-            "size": response.metadata.size,
         }
     except S3Error as e:
         raise HTTPException(status_code=400, detail=f"S3 operation failed: {str(e)}")
@@ -256,7 +217,7 @@ async def generate_presigned_url(
     key: str,
     bucket_name: Optional[str] = Query(None),
     expiration: int = Query(3600, ge=1, le=604800),
-    method: str = Query("GET", regex="^(GET|PUT)$"),
+    method: str = Query("GET", pattern="^(GET|PUT)$"),
     inline: bool = Query(False),
 ):
     """
@@ -304,7 +265,13 @@ async def update_file(
     key: str,
     file: UploadFile = File(...),
     bucket_name: Optional[str] = Query(None),
-    metadata: Optional[dict[str, str]] = Query(None),
+    metadata: Annotated[
+        str | None,
+        Form(
+            description="A JSON-encoded string of metadata tags",
+            examples=['{"version": "1.0", "project": "30ai"}'],
+        ),
+    ] = None,
 ):
     """
     Update a file in S3/R2 (replaces existing file).
@@ -315,6 +282,14 @@ async def update_file(
     - **metadata**: Optional metadata dict as JSON string
     """
     try:
+        json_metadata = None
+        if metadata:
+            try:
+                json_metadata = json.loads(metadata)
+
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="Invalid JSON in metadata")
+
         client = get_s3_client(bucket_name)
 
         content = await file.read()
@@ -325,7 +300,7 @@ async def update_file(
             key=key,
             bucket_name=bucket_name,
             content_type=file.content_type,
-            metadata=metadata,
+            metadata=json_metadata or None,
         )
 
         return {
