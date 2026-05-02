@@ -1,36 +1,14 @@
+import os
 from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks
 from sqlmodel import Session, select
 
-from database.models import Organization, User, Document, ProcessingJob
+from database.models import Document, ProcessingJob
 from database.session import get_db
 
-router = APIRouter(prefix="/api", tags=["database"])
-
-
-@router.get("/organizations", response_model=list[Organization])
-def get_organizations(db: Session = Depends(get_db)):
-    """Get all organizations."""
-    organizations = db.exec(select(Organization)).all()
-    return organizations
-
-
-@router.get("/organizations/{organization_id}", response_model=Organization)
-def get_organization(organization_id: str, db: Session = Depends(get_db)):
-    """Get a specific organization."""
-    organization = db.get(Organization, organization_id)
-    if not organization:
-        raise HTTPException(status_code=404, detail="Organization not found")
-    return organization
-
-
-@router.get("/users", response_model=list[User])
-def get_users(db: Session = Depends(get_db)):
-    """Get all users."""
-    users = db.exec(select(User)).all()
-    return users
+router = APIRouter(prefix="/api", tags=["documents"])
 
 
 @router.get("/documents", response_model=List[Document])
@@ -87,7 +65,6 @@ async def upload_document(
     # Store file in S3
     from packages.s3.src.s3 import R2Client
     from packages.s3.src.s3.exceptions import S3Error
-    import os
 
     s3_key = None
     try:
@@ -133,9 +110,7 @@ async def upload_document(
 @router.post("/documents/{document_id}/process")
 def process_document(document_id: UUID, db: Session = Depends(get_db)):
     """Trigger processing for a document."""
-    statement = select(Document).where(Document.id == document_id).with_for_update()
-    document = db.exec(statement)
-
+    document = db.get(Document, document_id)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 

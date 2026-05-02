@@ -3,9 +3,9 @@ import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from database.session import get_db
 from .s3_routes import router as s3_router
-from .database_routes import router as database_router
+from .auth_routes import router as auth_router
+from .document_routes import router as document_router
 
 # Celery integration
 from celery import Celery
@@ -34,7 +34,8 @@ app.add_middleware(
 
 # Include routers
 app.include_router(s3_router)
-app.include_router(database_router)
+app.include_router(auth_router)
+app.include_router(document_router)
 
 
 @app.get("/")
