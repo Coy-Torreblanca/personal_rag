@@ -1,12 +1,23 @@
 import os
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    UploadFile,
+    File,
+    BackgroundTasks,
+    Query,
+)
 from sqlmodel import Session, select
 
 from database.models import Document, ProcessingJob
 from database.session import get_db
+
+from s3.client import R2Client
+from s3.exceptions import S3Error
 
 router = APIRouter(prefix="/api", tags=["documents"])
 
@@ -18,13 +29,80 @@ def get_documents(db: Session = Depends(get_db)):
     return documents
 
 
+@router.get("/documents/upload-url/{file_path:path}")
+async def get_upload_s3_url(
+    file_path: str,
+    organization_id: Optional[UUID] = Query(None),
+    user_id: Optional[UUID] = Query(None),
+):
+    """
+    Generate a presigned URL for uploading a document to S3/R2.
+
+    - **file_path**: The file path/key in S3 (supports nested paths with /)
+    - **organization_id**: Organization ID for access validation
+    - **user_id**: User ID for access validation
+    - **expiration**: URL expiration time in seconds (1 - 604800, default 3600)
+
+    Returns:
+        dict: Contains the presigned URL and metadata
+            - url: The presigned URL for uploading
+            - bucket: The bucket name
+            - key: The S3 object key
+            - method: HTTP method (PUT)
+            - expires_in: Expiration time in seconds
+            - message: Success message
+    """
+    try:
+        # TODO validate user has access.
+        # TODO remove default.
+        bucket_name = os.environ.get("BUCKET_NAME")
+
+        if not bucket_name:
+            raise HTTPException(status_code=500, detail="No bucket name configured")
+
+        # Construct S3 key with organization prefix
+        key = f"{organization_id}/{file_path}"
+
+        # Create client
+        client = R2Client(bucket_name=bucket_name)
+
+        # TODO Add expiration logic.
+        expiration = 3600
+
+        # Generate presigned URL for PUT operation
+        response = client.generate_presigned_url(
+            key=key,
+            expiration=expiration,
+            method="PUT",
+            inline=False,
+        )
+
+        return {
+            "success": True,
+            "url": response.url,
+            "bucket": response.bucket,
+            "key": response.key,
+            "method": response.method,
+            "expires_in": response.expires_in,
+            "message": response.message,
+        }
+    except S3Error as e:
+        raise HTTPException(status_code=400, detail=f"S3 operation failed: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Presigned URL generation failed: {str(e)}",
+        )
+
+
 @router.post("/documents/upload")
 async def upload_document(
     file: UploadFile = File(...),
     organization_id: UUID | None = None,
     user_id: UUID | None = None,
     db: Session = Depends(get_db),
-    background_tasks: BackgroundTasks = None,
 ):
     """Upload a document for processing."""
     # Validate file type

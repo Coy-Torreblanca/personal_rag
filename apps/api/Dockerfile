@@ -1,4 +1,4 @@
-FROM python:3.11-slim as builder
+FROM python:3.13-slim as builder
 
 WORKDIR /app
 
@@ -17,34 +17,34 @@ ENV UV_COMPILE_BYTECODE=1
 RUN cd apps/api && uv sync --frozen --no-dev
 
 # Production stage
-FROM python:3.11-slim
 
-WORKDIR /app
+FROM python:3.13-slim
 
-# Create non-root user
+WORKDIR /app/apps/api
+
+# Install group/user
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
-# Copy Python dependencies from builder
+# 1. Copy dependencies
 COPY --from=builder /app/apps/api/.venv .venv
-ENV PATH="/app/.venv/bin:$PATH"
-ENV VIRTUAL_ENV="/app/.venv"
-ENV PYTHONUNBUFFERED=1
+COPY --from=builder /app/packages /app/packages
 
-# Copy application code
+# 2. Copy source code
 COPY apps/api/src ./src
 
-# Create necessary directories
-RUN mkdir -p /app/logs && chown -R appuser:appuser /app
+# 3. FIX PERMISSIONS (Perform this while still ROOT)
+# This grants appuser ownership and ensures everything in bin is executable
+RUN chown -R appuser:appuser /app && \
+    chmod -R +x .venv/bin/
 
-# Switch to non-root user
+# Set environment variables
+ENV PATH="/app/apps/api/.venv/bin:$PATH"
+ENV VIRTUAL_ENV="/app/apps/api/.venv"
+ENV PYTHONUNBUFFERED=1
+
+# Now safe to switch
 USER appuser
 
-# Expose port
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
-
-# Run the application
 CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
