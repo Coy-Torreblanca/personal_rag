@@ -73,12 +73,11 @@ class R2Client:
             endpoint_url=self.config.endpoint_url,
         )
 
-    def validate_bucket(self, bucket_name: str | None = None) -> str:
-        """Validate and return bucket name."""
-        bucket = bucket_name or self.config.bucket_name
-        if not bucket:
+    def _validate_bucket(self) -> str:
+        """Validate and return bucket name from config."""
+        if not self.config.bucket_name:
             raise ConfigurationError("Bucket name is required")
-        return bucket
+        return self.config.bucket_name
 
     def _handle_client_error(self, error: ClientError, operation: str) -> None:
         """Handle boto3 ClientError and raise appropriate exception."""
@@ -109,12 +108,11 @@ class R2Client:
         self,
         file_path: str,
         key: str,
-        bucket_name: str,
         content_type: str,
         metadata: dict[str, str] | None = None,
     ) -> UploadResponse:
         """Upload a file from local path."""
-        bucket = self.validate_bucket(bucket_name)
+        bucket = self._validate_bucket()
 
         try:
             extra_args = {}
@@ -146,12 +144,11 @@ class R2Client:
         self,
         data: bytes,
         key: str,
-        bucket_name: str | None = None,
         content_type: str | None = None,
         metadata: dict[str, str] | None = None,
     ) -> UploadResponse:
         """Upload bytes data."""
-        bucket = self.validate_bucket(bucket_name)
+        bucket = self._validate_bucket()
 
         try:
             extra_args = {}
@@ -182,10 +179,9 @@ class R2Client:
         self,
         key: str,
         file_path: str,
-        bucket_name: str | None = None,
     ) -> DownloadResponse:
         """Download a file to local path."""
-        bucket = self.validate_bucket(bucket_name)
+        bucket = self._validate_bucket()
 
         try:
             self.client.download_file(bucket, key, file_path)
@@ -216,10 +212,9 @@ class R2Client:
     def download_bytes(
         self,
         key: str,
-        bucket_name: str | None = None,
     ) -> DownloadResponse:
         """Download file as bytes."""
-        bucket = self.validate_bucket(bucket_name)
+        bucket = self._validate_bucket()
 
         try:
             response = self.client.get_object(Bucket=bucket, Key=key)
@@ -245,10 +240,9 @@ class R2Client:
     def delete_file(
         self,
         key: str,
-        bucket_name: str | None = None,
     ) -> DeleteResponse:
         """Delete a file."""
-        bucket = self.validate_bucket(bucket_name)
+        bucket = self._validate_bucket()
 
         try:
             response = self.client.delete_object(Bucket=bucket, Key=key)
@@ -275,12 +269,11 @@ class R2Client:
     def list_files(
         self,
         prefix: str | None = None,
-        bucket_name: str | None = None,
         max_keys: int = 1000,
         continuation_token: str | None = None,
     ) -> ListResponse:
         """List files in bucket."""
-        bucket = self.validate_bucket(bucket_name)
+        bucket = self._validate_bucket()
 
         try:
             params = {"Bucket": bucket, "Prefix": prefix or "", "MaxKeys": max_keys}
@@ -315,12 +308,11 @@ class R2Client:
         self,
         key: str,
         expiration: int = 3600,
-        bucket_name: str | None = None,
         method: str = "GET",
         inline: bool = False,
     ) -> PresignedUrlResponse:
         """Generate a presigned URL for temporary access."""
-        bucket = self.validate_bucket(bucket_name)
+        bucket = self._validate_bucket()
 
         try:
             # Map method to appropriate client method
@@ -355,10 +347,9 @@ class R2Client:
     def file_exists(
         self,
         key: str,
-        bucket_name: str | None = None,
     ) -> bool:
         """Check if a file exists."""
-        bucket = self.validate_bucket(bucket_name)
+        bucket = self._validate_bucket()
 
         try:
             self.client.head_object(Bucket=bucket, Key=key)
