@@ -15,6 +15,9 @@ from sqlmodel import (
 from sqlalchemy import DateTime
 from sqlalchemy.sql import func
 
+# For vector embeddings (if using pgvector)
+from pgvector.sqlalchemy import Vector
+
 
 class DocumentStatus(StrEnum):
     """Document status enum."""
@@ -154,13 +157,17 @@ class DocumentChunkBase(SQLModel):
     organization_id: UUID = Field(foreign_key="organizations.id", nullable=False)
     chunk_index: int = Field(nullable=False)  # Order of chunk in document
     content: str = Field(sa_column=Column(Text, nullable=False))
-    embedding: str | None = Field(default=None)  # Will be vector type
+    embedding: list[float] | None = Field(
+        default=None,
+        sa_column=Column(Vector(1536)),  # 1536 dimensions for OpenAI embeddings
+    )
     meta_data: dict[str, object] = Field(default={}, sa_column=Column(JSON))
 
 
 class DocumentChunk(DocumentChunkBase, table=True):
     """Document chunk with vector embedding."""
 
+    # type: ignore[assignment]
     __tablename__ = "document_chunks"
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -183,6 +190,8 @@ class DocumentChunk(DocumentChunkBase, table=True):
     __table_args__: tuple[Index, ...] = (  # type: ignore
         Index("idx_document_chunks_document", "document_id"),
         Index("idx_document_chunks_organization", "organization_id"),
+        # For vector similarity search (uncomment when needed)
+        # Index("idx_document_chunks_embedding", "embedding", postgresql_using="ivfflat", postgresql_with={"lists": 100}),
     )
 
 
