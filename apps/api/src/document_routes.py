@@ -60,6 +60,9 @@ async def get_upload_s3_url(
         if not bucket_name:
             raise HTTPException(status_code=500, detail="No bucket name configured")
 
+        if not organization_id:
+            organization_id = "test"
+
         # Construct S3 key with organization prefix
         key = f"{organization_id}/{file_path}"
 
