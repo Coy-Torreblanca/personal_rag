@@ -58,63 +58,6 @@
 - Python 3.11+ and uv
 - **Podman** and **podman-compose**
 
-### Quick Start
-
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd 30ai
-   ```
-
-2. **Set up environment variables**
-   ```bash
-   cp .env.example .env.local
-   # Edit .env.local with your configuration
-   ```
-
-3. **Install dependencies**
-   ```bash
-   make setup
-   ```
-
-4. **Start development services**
-   ```bash
-   # Start all services in foreground (logs visible)
-   make dev
-   
-   # Or start in background
-   make dev-up
-   ```
-
-5. **Access the applications**
-   - Frontend: http://localhost:3000
-   - API: http://localhost:8000
-   - API Docs: http://localhost:8000/docs
-   - View logs: `make dev-logs`
-   - Stop services: `make dev-down`
-
-### Development Commands
-
-```bash
-# Start database services
-make db-up
-
-# Stop database services
-make db-down
-
-# Run tests
-make test
-
-# Run linters
-make lint
-
-# Format code
-make format
-
-# Clean build artifacts
-make clean
-```
-
 ## 🐳 Podman Development
 
 The project uses Podman Compose to manage all services:
@@ -235,6 +178,28 @@ See `.env.example` for all required environment variables:
 - **AWS**: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
 
 ## 🧪 Testing
+
+### Test Data
+The following test organization and user have been created in the database for development and testing:
+
+**Test Organization**
+- **ID**: `70885aed-0503-4656-bb72-368a26758575`
+- **Name**: Test Organization
+
+**Test User**
+- **ID**: `c06ed70c-b7bd-45a4-d0d7-0a978d44d956`
+- **Email**: test@example.com
+- **Full Name**: Test User
+- **Organization ID**: `70885aed-0503-4656-bb72-368a26758575`
+
+### Example API Calls
+
+**Get upload URL for a document**
+```bash
+curl -G "http://localhost:8000/api/documents/upload-url/test/my-document.pdf" \
+  --data-urlencode "organization_id=70885aed-0503-4656-bb72-368a26758575" \
+  --data-urlencode "user_id=c06ed70c-b7bd-45a4-d0d7-0a978d44d956"
+```
 
 ### Backend Tests
 ```bash

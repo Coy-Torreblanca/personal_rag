@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 # Add the src directory to the Python path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src/database"))
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -78,7 +78,10 @@ def run_migrations_online() -> None:
 
     with connectable.connect() as connection:
         context.configure(
-            connection=connection, target_metadata=target_metadata
+            connection=connection,
+            target_metadata=target_metadata,
+            compare_type=True,  # Enable type comparison for enums
+            compare_server_default=True,  # Compare server defaults
         )
 
         with context.begin_transaction():

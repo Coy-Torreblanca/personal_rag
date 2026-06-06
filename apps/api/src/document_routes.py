@@ -1,6 +1,6 @@
 import os
 from typing import List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import (
     APIRouter,
@@ -13,7 +13,7 @@ from fastapi import (
 )
 from sqlmodel import Session, select
 
-from database.models import Document, ProcessingJob
+from database.models import Document, DocumentStatus, ProcessingJob, ProcessingJobStatus
 from database.session import get_db
 
 from s3.client import R2Client
@@ -32,13 +32,16 @@ def get_documents(db: Session = Depends(get_db)):
 @router.get("/documents/upload-url/{file_path:path}")
 async def get_upload_s3_url(
     file_path: str,
-    organization_id: Optional[UUID] = Query(None),
-    user_id: Optional[UUID] = Query(None),
+    organization_id: UUID = Query(),
+    user_id: UUID = Query(),
+    content_type: str = Query(),
+    db: Session = Depends(get_db),
 ):
     """
     Generate a presigned URL for uploading a document to S3/R2.
 
     - **file_path**: The file path/key in S3 (supports nested paths with /)
+    - **content_type**: Content Type header for file upload.
     - **organization_id**: Organization ID for access validation
     - **user_id**: User ID for access validation
     - **expiration**: URL expiration time in seconds (1 - 604800, default 3600)
@@ -54,14 +57,10 @@ async def get_upload_s3_url(
     """
     try:
         # TODO validate user has access.
-        # TODO remove default.
         bucket_name = os.environ.get("BUCKET_NAME")
 
         if not bucket_name:
             raise HTTPException(status_code=500, detail="No bucket name configured")
-
-        if not organization_id:
-            organization_id = "test"
 
         # Construct S3 key with organization prefix
         key = f"{organization_id}/{file_path}"
@@ -72,12 +71,37 @@ async def get_upload_s3_url(
         # TODO Add expiration logic.
         expiration = 3600
 
+        doc = Document(
+            organization_id=organization_id,
+            user_id=user_id,
+            filename=file_path,
+            s3_key=key,
+            status=DocumentStatus.UPLOADING,
+            file_type=content_type,
+        )
+
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
+
+        # Create job
+        job = ProcessingJob(
+            document_id=doc.id,
+            job_type="Upload+Embedding",
+            status=ProcessingJobStatus.PENDING,
+            id=uuid4(),
+        )
+
+        db.add(job)
+        db.commit()
+
         # Generate presigned URL for PUT operation
         response = client.generate_presigned_url(
             key=key,
             expiration=expiration,
             method="PUT",
             inline=False,
+            content_type=content_type,
         )
 
         return {
@@ -100,94 +124,6 @@ async def get_upload_s3_url(
         )
 
 
-@router.post("/documents/upload")
-async def upload_document(
-    file: UploadFile = File(...),
-    organization_id: UUID | None = None,
-    user_id: UUID | None = None,
-    db: Session = Depends(get_db),
-):
-    """Upload a document for processing."""
-    # Validate file type
-    allowed_types = [
-        "application/pdf",
-        "text/plain",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ]
-    if file.content_type not in allowed_types:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File type {file.content_type} not supported. Allowed types: {', '.join(allowed_types)}",
-        )
-
-    # Read file content
-    content = await file.read()
-    file_size = len(content)
-
-    # Create document record
-    document = Document(
-        filename=file.filename,
-        file_type=file.content_type,
-        file_size=file_size,
-        organization_id=organization_id
-        or UUID("00000000-0000-0000-0000-000000000000"),  # Default org
-        user_id=user_id or UUID("00000000-0000-0000-0000-000000000000"),  # Default user
-        status="uploaded",
-        metadata={
-            "original_filename": file.filename,
-            "content_type": file.content_type,
-        },
-    )
-
-    db.add(document)
-    db.commit()
-    db.refresh(document)
-
-    # Store file in S3
-    from packages.s3.src.s3 import R2Client
-    from packages.s3.src.s3.exceptions import S3Error
-
-    s3_key = None
-    try:
-        org_id = organization_id or UUID("00000000-0000-0000-0000-000000000000")
-        s3_client = R2Client(bucket_name=os.getenv("S3_BUCKET_NAME", "documents"))
-        s3_key = f"documents/{org_id}/{document.id}/{file.filename}"
-
-        s3_response = s3_client.upload_bytes(
-            data=content,
-            key=s3_key,
-            content_type=file.content_type,
-            metadata={
-                "document_id": str(document.id),
-                "organization_id": str(org_id),
-            },
-        )
-
-        document.metadata["s3_key"] = s3_key
-        document.metadata["s3_bucket"] = s3_response.metadata.bucket
-        db.add(document)
-        db.commit()
-    except S3Error as e:
-        document.metadata["s3_error"] = str(e)
-        db.add(document)
-        db.commit()
-
-    # Trigger background processing
-    if background_tasks:
-        # In a real implementation, this would call Celery
-        # background_tasks.add_task(process_document_task, document.id)
-        pass
-
-    return {
-        "message": "Document uploaded successfully",
-        "document_id": str(document.id),
-        "filename": document.filename,
-        "status": document.status,
-        "s3_key": s3_key,
-        "file_size": file_size,
-    }
-
-
 @router.post("/documents/{document_id}/process")
 def process_document(document_id: UUID, db: Session = Depends(get_db)):
     """Trigger processing for a document."""
@@ -202,7 +138,7 @@ def process_document(document_id: UUID, db: Session = Depends(get_db)):
         )
 
     # Update document status
-    document.status = "processing"
+    document.status = DocumentStatus.PROCESSING
     db.add(document)
     db.commit()
 
@@ -214,6 +150,67 @@ def process_document(document_id: UUID, db: Session = Depends(get_db)):
         "document_id": str(document_id),
         "status": "processing",
     }
+
+
+@router.delete("/documents/{document_id}", status_code=200)
+def delete_document(document_id: UUID, db: Session = Depends(get_db)):
+    """Delete a document and its associated data.
+
+    Removes the document from the database, deletes the file from S3/R2 storage,
+    and removes any associated processing jobs.
+
+    - **document_id**: The UUID of the document to delete
+
+    Returns:
+        dict: Confirmation of deletion
+            - success: True if deletion was successful
+            - message: Confirmation message
+            - document_id: The ID of the deleted document
+    """
+    document = db.get(Document, document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    bucket_name = os.environ.get("BUCKET_NAME")
+
+    if not bucket_name:
+        raise HTTPException(status_code=500, detail="No bucket name configured")
+
+    try:
+        # Delete the file from S3/R2 if it has a key
+        if document.s3_key:
+            try:
+                client = R2Client(bucket_name=bucket_name)
+                client.delete_file(key=document.s3_key)
+            except S3Error as e:
+                raise HTTPException(
+                    status_code=500, detail="Error deleted the target file."
+                )
+
+        # Delete associated processing jobs
+        jobs = db.exec(
+            select(ProcessingJob).where(ProcessingJob.document_id == document_id)
+        ).all()
+        for job in jobs:
+            db.delete(job)
+
+        # Delete the document
+        db.delete(document)
+        db.commit()
+
+        return {
+            "success": True,
+            "message": f"Document '{document.filename}' deleted successfully",
+            "document_id": str(document_id),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Document deletion failed: {str(e)}",
+        )
 
 
 @router.get("/processing-jobs", response_model=List[ProcessingJob])

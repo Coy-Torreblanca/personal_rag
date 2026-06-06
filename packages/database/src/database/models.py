@@ -22,6 +22,7 @@ from pgvector.sqlalchemy import Vector
 class DocumentStatus(StrEnum):
     """Document status enum."""
 
+    UPLOADING = "uploading"
     UPLOADED = "uploaded"
     PROCESSING = "processing"
     PROCESSED = "processed"
@@ -222,6 +223,7 @@ class ProcessingJob(ProcessingJobBase, table=True):
         sa_column=Column(DateTime(timezone=True), server_default=func.now()),
     )
     updated_at: datetime | None = Field(
+        default=None,
         sa_column=Column(
             DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
         ),

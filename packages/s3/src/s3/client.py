@@ -310,6 +310,7 @@ class R2Client:
         expiration: int = 3600,
         method: str = "GET",
         inline: bool = False,
+        content_type: str | None = None,
     ) -> PresignedUrlResponse:
         """Generate a presigned URL for temporary access."""
         bucket = self._validate_bucket()
@@ -319,6 +320,9 @@ class R2Client:
             client_method = "get_object" if method.upper() == "GET" else "put_object"
 
             params = {"Bucket": bucket, "Key": key}
+
+            if content_type:
+                params["ContentType"] = content_type
 
             if inline:
                 params["ResponseContentDisposition"] = "inline"
