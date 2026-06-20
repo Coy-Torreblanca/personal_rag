@@ -7,16 +7,6 @@ from .s3_routes import router as s3_router
 from .auth_routes import router as auth_router
 from .document_routes import router as document_router
 
-# Celery integration
-from celery import Celery
-
-# Create Celery application for API
-celery = Celery(
-    "30ai_api",
-    broker=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-    backend=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-)
-
 app = FastAPI(
     title="30ai API",
     description="AI-powered business intelligence platform",

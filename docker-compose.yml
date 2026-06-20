@@ -34,6 +34,26 @@ services:
     networks:
       - 30ai-network
 
+  workers:
+    build:
+      context: ./apps/workers
+      dockerfile: Dockerfile
+    container_name: 30ai-workers
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=development
+    volumes:
+      - ./apps/workers:/app
+      - /app/.venv
+      - ./packages:/packages
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - 30ai-network
+
   api:
     build:
       context: .
@@ -56,25 +76,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    networks:
-      - 30ai-network
-
-  workers:
-    build:
-      context: ./apps/workers
-      dockerfile: Dockerfile
-    container_name: 30ai-workers
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - ENVIRONMENT=development
-    volumes:
-      - ./apps/workers:/app
-      - /app/.venv
-      - ./packages:/packages
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
+      workers:
         condition: service_healthy
     networks:
       - 30ai-network

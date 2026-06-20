@@ -29,5 +29,13 @@ def health_check():
     return {"status": "healthy", "service": "30ai-workers"}
 
 
+@celery.task(name="test")
+def test():
+    print("Hello from workers!")
+    import time
+
+    time.sleep(5)
+
+
 if __name__ == "__main__":
     celery.start()

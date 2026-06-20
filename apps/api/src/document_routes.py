@@ -18,6 +18,7 @@ from database.session import get_db
 
 from s3.client import R2Client
 from s3.exceptions import S3Error
+from .celery_client import celery
 
 router = APIRouter(prefix="/api", tags=["documents"])
 
@@ -71,6 +72,8 @@ async def get_upload_s3_url(
         # TODO Add expiration logic.
         expiration = 3600
 
+        # TODO - consider upserts
+        ## For example we will be changing uploaded status to uploading but doc is available to user.
         doc = Document(
             organization_id=organization_id,
             user_id=user_id,
@@ -89,8 +92,9 @@ async def get_upload_s3_url(
             document_id=doc.id,
             job_type="Upload+Embedding",
             status=ProcessingJobStatus.PENDING,
-            id=uuid4(),
         )
+
+        job_id = job.id
 
         db.add(job)
         db.commit()
@@ -112,42 +116,74 @@ async def get_upload_s3_url(
             "method": response.method,
             "expires_in": response.expires_in,
             "message": response.message,
+            "job_id": job_id,
         }
     except S3Error as e:
-        raise HTTPException(status_code=400, detail=f"S3 operation failed: {str(e)}")
+        raise HTTPException(
+            status_code=400, detail=f"S3 operation failed: {str(e)}"
+        ) from e
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"Presigned URL generation failed: {str(e)}",
-        )
+        ) from e
 
 
 @router.post("/documents/{document_id}/process")
-def process_document(document_id: UUID, db: Session = Depends(get_db)):
+def process_document(job_id: UUID, db: Session = Depends(get_db)):
     """Trigger processing for a document."""
-    document = db.get(Document, document_id)
+    job = db.get(ProcessingJob, job_id)
+
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail="Job id provided does not correspond with any known jobs.",
+        )
+
+    document = db.get(Document, job.document_id)
+
     if not document:
-        raise HTTPException(status_code=404, detail="Document not found")
+        job.status = ProcessingJobStatus.FAILED
+        db.add(job)
+        db.commit()
+
+        raise HTTPException(
+            status_code=404, detail="Document associated with job not found"
+        )
 
     # Check if document is already being processed
-    if document.status in ["processing", "processed"]:
+    if document.status == DocumentStatus.PROCESSING:
         raise HTTPException(
             status_code=400, detail=f"Document is already {document.status}"
         )
 
+    if job.status != ProcessingJobStatus.PENDING:
+        raise HTTPException(
+            status_code=400, detail=f"Job is not in pending status: {job.status}"
+        )
+    # TODO - Validate that the document is uploaded.
+
     # Update document status
     document.status = DocumentStatus.PROCESSING
     db.add(document)
+
+    job.celery_task_id = str(job_id)
+    db.add(job)
     db.commit()
 
-    # TODO: Send task to Celery worker
-    # celery.send_task("process_document", args=[str(document_id)])
+    document_id = document.id
+
+    # Dispatch processing to Celery worker
+    result = celery.send_task(
+        "process_document", args=[str(document_id)], task_id=job_id
+    )
 
     return {
         "message": "Document processing started",
         "document_id": str(document_id),
+        "task_id": result.id,
         "status": "processing",
     }
 
@@ -227,3 +263,11 @@ def get_processing_job(job_id: UUID, db: Session = Depends(get_db)):
     if not job:
         raise HTTPException(status_code=404, detail="Processing job not found")
     return job
+
+
+@router.get("/test")
+def test():
+    result = celery.send_task(
+        "test",
+    )
+    print(result)

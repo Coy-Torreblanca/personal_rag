@@ -23,6 +23,7 @@ dependencies = [
     "clerk-sdk>=0.1.0",
     "s3",
     "database",
+    "modal>=1.4.3",
 ]
 requires-python = ">=3.11"
 
