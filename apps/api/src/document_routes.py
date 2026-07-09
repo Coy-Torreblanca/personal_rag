@@ -170,6 +170,7 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)):
     db.add(document)
 
     job.celery_task_id = str(job_id)
+    job.status = ProcessingJobStatus.PROCESSING
     db.add(job)
     db.commit()
 

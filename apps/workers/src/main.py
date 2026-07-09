@@ -1,5 +1,7 @@
 import os
+import modal
 from celery import Celery
+from .process_document import modal_hello_world
 
 # Create Celery application
 celery = Celery(
@@ -32,6 +34,9 @@ def health_check():
 @celery.task(name="test")
 def test():
     print("Hello from workers!")
+    modal_result = modal_hello_world.remote()
+    print(f"modal says: {modal_result}")
+
     import time
 
     time.sleep(5)
