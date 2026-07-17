@@ -42,9 +42,10 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=development
+      - MODAL_TOKEN_ID=${MODAL_TOKEN_ID}
+      - MODAL_TOKEN_SECRET=${MODAL_TOKEN_SECRET}
     volumes:
       - ./apps/workers:/app
-      - /app/.venv
       - ./packages:/packages
     depends_on:
       postgres:
@@ -106,3 +107,5 @@ volumes:
 networks:
   30ai-network:
     driver: bridge
+
+

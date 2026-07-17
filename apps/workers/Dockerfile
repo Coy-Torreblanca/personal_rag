@@ -3,7 +3,7 @@
 # ==========================================
 FROM python:3.11-slim as builder
 
-WORKDIR /app
+WORKDIR /opt
 
 # Install uv for fast dependency management
 RUN pip install uv
@@ -23,7 +23,7 @@ RUN uv sync --frozen --no-dev
 # ==========================================
 FROM python:3.11-slim
 
-WORKDIR /app
+WORKDIR /opt
 
 # Create non-root user
 RUN groupadd -r appuser && useradd -r -g appuser appuser
@@ -35,12 +35,14 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy Python dependencies from the builder stage above
-COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /opt/.venv /opt/.venv
 
 # Set environment variables so Python uses the virtual environment
-ENV PATH="/app/.venv/bin:$PATH"
-ENV VIRTUAL_ENV="/app/.venv"
+ENV PATH="/opt/.venv/bin:$PATH"
+ENV VIRTUAL_ENV="/opt/.venv"
 ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
 
 # Copy application code
 COPY . .
@@ -56,4 +58,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD python -m celery -A src.main.celery inspect ping -d celery@$HOSTNAME || exit 1
 
 # Run Celery worker using the python module flag
-CMD ["/app/.venv/bin/python", "-m", "celery", "-A", "src.main.celery", "worker", "--loglevel=info"]
+CMD ["/opt/.venv/bin/python", "-m", "celery", "-A", "src.main.celery", "worker", "--loglevel=info"]
