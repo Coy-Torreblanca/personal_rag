@@ -25,7 +25,7 @@ podman rm <label>
 ```
 
 ```bash
-podman-compose --env-file .env up -d --build api
+podman-compose --env-file .env up -d --build --no-cache workers api
 ```
 
 ## Testing Presigned URLs
