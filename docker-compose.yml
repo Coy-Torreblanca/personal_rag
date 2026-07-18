@@ -9,7 +9,7 @@ services:
     ports:
       - "${DB_PORT:-5432}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./docker_data/postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-30ai_user} -d ${DB_NAME:-30ai_db}"]
       interval: 10s
@@ -36,10 +36,11 @@ services:
 
   workers:
     build:
-      context: ./apps/workers
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./apps/workers/Dockerfile
     container_name: 30ai-workers
     environment:
+      - DATABASE_URL=postgresql://${DB_USER:-30ai_user}:${DB_PASSWORD:-30ai_password}@postgres:5432/${DB_NAME:-30ai_db}
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=development
       - MODAL_TOKEN_ID=${MODAL_TOKEN_ID}

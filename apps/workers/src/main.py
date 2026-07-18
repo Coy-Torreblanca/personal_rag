@@ -1,7 +1,13 @@
 import os
 import modal
+from contextlib import contextmanager
 from celery import Celery
 from .process_document import modal_hello_world, app
+from .process_document import process_document as modal_process_document
+
+from database.models import Document, DocumentStatus, ProcessingJob, ProcessingJobStatus
+from database.session import get_db
+
 
 # Create Celery application
 celery = Celery(
@@ -29,6 +35,45 @@ celery.conf.update(
 def health_check():
     """Health check task."""
     return {"status": "healthy", "service": "30ai-workers"}
+
+
+@celery.task(name="process_document", bind=True)
+def process_document(self, document_id: str, presigned_url: str) -> str:
+    job_id = self.request.id
+
+    try:
+        with app.run():
+            result = modal_process_document.remote(document_id, job_id, presigned_url)
+
+    except Exception as e:
+        with contextmanager(get_db)() as db:
+            try:
+                doc = db.get(Document, document_id)
+                if doc:
+                    doc.status = DocumentStatus.ERROR
+                job = db.get(ProcessingJob, job_id)
+                if job:
+                    job.status = ProcessingJobStatus.FAILED
+
+                db.commit()
+            except Exception as ee:
+                db.rollback()
+                print(ee)
+
+        raise e
+
+    # TODO Make Async and have modal make fast api call to mark completed.
+    with contextmanager(get_db)() as db:
+        doc = db.get(Document, document_id)
+        if doc:
+            doc.status = DocumentStatus.PROCESSED
+        job = db.get(ProcessingJob, job_id)
+        if job:
+            job.status = ProcessingJobStatus.COMPLETED
+
+        db.commit()
+
+    return result
 
 
 @celery.task(name="test")

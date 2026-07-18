@@ -100,6 +100,7 @@ async def get_upload_s3_url(
         db.commit()
 
         # Generate presigned URL for PUT operation
+        # TODO validate response
         response = client.generate_presigned_url(
             key=key,
             expiration=expiration,
@@ -131,7 +132,7 @@ async def get_upload_s3_url(
         ) from e
 
 
-@router.post("/documents/{document_id}/process")
+@router.post("/documents/{job_id}/process")
 def process_document(job_id: UUID, db: Session = Depends(get_db)):
     """Trigger processing for a document."""
     job = db.get(ProcessingJob, job_id)
@@ -155,15 +156,37 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)):
 
     # Check if document is already being processed
     if document.status == DocumentStatus.PROCESSING:
+        raise HTTPException(status_code=400, detail=f"Document is already processing.")
+
+    if not document.s3_key:
         raise HTTPException(
-            status_code=400, detail=f"Document is already {document.status}"
+            status_code=500, detail=f"Could not find s3 key for document: {document.id}"
         )
 
     if job.status != ProcessingJobStatus.PENDING:
         raise HTTPException(
-            status_code=400, detail=f"Job is not in pending status: {job.status}"
+            status_code=400, detail=f"Job is not in pending status: {job.status.value}"
         )
+
     # TODO - Validate that the document is uploaded.
+    bucket_name = os.environ.get("BUCKET_NAME")
+
+    if not bucket_name:
+        raise HTTPException(status_code=500, detail="No bucket name configured")
+
+    # Create client
+    client = R2Client(bucket_name=bucket_name)
+
+    # TODO Add expiration logic.
+    expiration = 3600
+
+    # TODO validate response
+    response = client.generate_presigned_url(
+        key=document.s3_key,
+        expiration=expiration,
+        method="GET",
+        inline=False,
+    )
 
     # Update document status
     document.status = DocumentStatus.PROCESSING
@@ -172,14 +195,23 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)):
     job.celery_task_id = str(job_id)
     job.status = ProcessingJobStatus.PROCESSING
     db.add(job)
-    db.commit()
 
     document_id = document.id
 
-    # Dispatch processing to Celery worker
-    result = celery.send_task(
-        "process_document", args=[str(document_id)], task_id=job_id
-    )
+    try:
+        db.flush()
+
+        # Dispatch processing to Celery worker
+        result = celery.send_task(
+            "process_document",
+            args=[str(document_id), response.url],
+            task_id=str(job_id),
+        )
+        db.commit()
+
+    except Exception as e:
+        db.rollback()
+        raise e
 
     return {
         "message": "Document processing started",

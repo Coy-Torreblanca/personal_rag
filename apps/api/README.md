@@ -19,13 +19,16 @@ podman run --rm -p 8000:8000 --env-file .env localhost/apitest
 ### To run the app
 
 Stop the running container as needed.
+
 ```bash
 podman stop <label>
 podman rm <label>
-```
 
-```bash
-podman-compose --env-file .env up -d --build --no-cache workers api
+podman stop 30ai-api
+podman stop 30ai-workers
+podman rm 30ai-api
+podman rm 30ai-workers
+podman-compose --env-file .env up -d --build  workers api
 ```
 
 ## Testing Presigned URLs
@@ -61,7 +64,7 @@ Use the presigned URL to upload your file directly to S3:
 
 ```bash
 curl -v -X PUT -H "Content-Type: application/x-yaml" --data-binary "@docker-compose.yml" \
-  "https://70885aed0503f656bb72368a26758575.r2.cloudflarestorage.com/30aidev/70885aed-0503-4656-bb72-368a26758575/docker-compose.yml?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=68410334538db91d3ca5ff569ec938b7%2F20260606%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=20260606T203452Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=content-type%3Bhost&X-Amz-Signature=780e12255cf07d0ec0fdbace1eaad042a092024a80fa3a918bd894c5eded4700"
+  "https://70885aed0503f656bb72368a26758575.r2.cloudflarestorage.com/30aidev/70885aed-0503-4656-bb72-368a26758575/docker-compose.yml?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=68410334538db91d3ca5ff569ec938b7%2F20260718%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=20260718T134357Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=content-type%3Bhost&X-Amz-Signature=62dce06c68eada667b6200fc10e6988e6674e3ba8f603b710821ae127acf08a5"
 ```
 
 **Notes**:

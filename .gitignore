@@ -188,3 +188,6 @@ staticfiles/
 *.key
 *.crt
 *.csr
+
+# Postgres
+docker_data/postgres_data
