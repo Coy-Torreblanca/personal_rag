@@ -2,9 +2,8 @@ import os
 import modal
 from contextlib import contextmanager
 from celery import Celery
-from .process_document import modal_hello_world, app
-from .process_document import process_document as modal_process_document
 
+from .process_document import APP_NAME
 from database.models import Document, DocumentStatus, ProcessingJob, ProcessingJobStatus
 from database.session import get_db
 
@@ -42,8 +41,11 @@ def process_document(self, document_id: str, presigned_url: str) -> str:
     job_id = self.request.id
 
     try:
-        with app.run():
-            result = modal_process_document.remote(document_id, job_id, presigned_url)
+        m_cls = modal.Cls.from_name(APP_NAME, "DoclingParser")
+
+        result = m_cls().process_document.remote(presigned_url)
+
+        print(result)
 
     except Exception as e:
         with contextmanager(get_db)() as db:
