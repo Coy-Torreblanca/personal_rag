@@ -13,6 +13,7 @@ image = (
         "docling>=2.0.0",
         "torch",
         "torchvision",
+        "httpx",
         extra_options="--extra-index-url www.download.pytorch.org/whl/cpu",
     )
     .env({"HF_HOME": CACHE_DIR})
@@ -36,18 +37,40 @@ class DoclingParser:
         print("Converter successfully initialized")
 
     @modal.method()
-    def process_document(self, presighed_url: str):
+    def process_document(self, download_url: str, upload_url: str):
+        import httpx
 
         print("Processing with Docling pipeline.")
 
         # TODO upload to url.
         try:
-            result = self.converter.convert(presighed_url)
+            result = self.converter.convert(download_url)
+            markdown_content = result.document.export_to_markdown()
         except Exception as e:
             return {"status": "error", "message": f"failed to fetch s3 obj: {str(e)}"}
 
-        print(f"Document has been processed: {result}")
-        return f"Document has been processed: {result}"
+        print(f"Document has been processed.")
+
+        # 2. Upload the Markdown string to the presigned S3 upload URL via PUT
+        try:
+            # S3 presigned URLs require the payload as raw bytes or file-like objects
+            upload_response = httpx.put(
+                upload_url,
+                content=markdown_content.encode("utf-8"),
+                headers={"Content-Type": "text/markdown"},
+                timeout=60.0,
+            )
+            upload_response.raise_for_status()
+        except Exception as e:
+            return {"status": "error", "message": f"failed to upload to S3: {str(e)}"}
+
+        print("Upload complete!")
+        return {
+            "status": "success",
+            "pages": len(result.document.pages)
+            if hasattr(result.document, "pages")
+            else 1,
+        }
 
 
 @app.function()

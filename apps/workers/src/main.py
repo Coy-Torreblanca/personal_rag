@@ -37,13 +37,13 @@ def health_check():
 
 
 @celery.task(name="process_document", bind=True)
-def process_document(self, document_id: str, presigned_url: str) -> str:
+def process_document(self, document_id: str, download_url: str, upload_url: str) -> str:
     job_id = self.request.id
 
     try:
         m_cls = modal.Cls.from_name(APP_NAME, "DoclingParser")
 
-        result = m_cls().process_document.remote(presigned_url)
+        result = m_cls().process_document.remote(download_url, upload_url)
 
         print(result)
 

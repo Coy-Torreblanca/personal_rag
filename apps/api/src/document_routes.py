@@ -188,6 +188,17 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)):
         inline=False,
     )
 
+    download_url = response.url
+
+    response = client.generate_presigned_url(
+        key=document.s3_key + ".md",
+        expiration=expiration,
+        method="PUT",
+        inline=False,
+    )
+
+    upload_url = response.url
+
     # Update document status
     document.status = DocumentStatus.PROCESSING
     db.add(document)
@@ -204,7 +215,7 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)):
         # Dispatch processing to Celery worker
         result = celery.send_task(
             "process_document",
-            args=[str(document_id), response.url],
+            args=[str(document_id), download_url, upload_url],
             task_id=str(job_id),
         )
         db.commit()
