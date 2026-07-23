@@ -210,13 +210,3 @@ infrastructure/
 6. **Testing**: Comprehensive test structure at all levels
 7. **Documentation**: Self-documenting structure with READMEs in each directory
 
-## Getting Started
-
-1. Clone the repository
-2. Copy `.env.example` to `.env.local` and configure
-3. Run `make setup` to initialize the project
-4. Run `make dev` to start all development services (or `make dev-up` for background)
-5. Run `make test` to run tests
-6. Use `make dev-logs` to view logs, `make dev-down` to stop services
-
-This structure follows industry best practices for scalable, maintainable applications with AI/ML components.

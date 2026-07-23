@@ -1,29 +1,25 @@
 import os
-from typing import List, Optional
-from uuid import UUID, uuid4
+from uuid import UUID
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    HTTPException,
-    UploadFile,
-    File,
-    BackgroundTasks,
-    Query,
-)
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
-from database.models import Document, DocumentStatus, ProcessingJob, ProcessingJobStatus
+from database.models import (
+    Document,
+    DocumentStatus,
+    ProcessingJob,
+    ProcessingJobStatus,
+)
 from database.session import get_db
-
 from s3.client import R2Client
 from s3.exceptions import S3Error
+
 from .celery_client import celery
 
 router = APIRouter(prefix="/api", tags=["documents"])
 
 
-@router.get("/documents", response_model=List[Document])
+@router.get("/documents", response_model=list[Document])
 def get_documents(db: Session = Depends(get_db)):
     """Get all documents."""
     documents = db.exec(select(Document)).all()
@@ -293,7 +289,7 @@ def delete_document(document_id: UUID, db: Session = Depends(get_db)):
         )
 
 
-@router.get("/processing-jobs", response_model=List[ProcessingJob])
+@router.get("/processing-jobs", response_model=list[ProcessingJob])
 def get_processing_jobs(db: Session = Depends(get_db)):
     """Get all processing jobs."""
     jobs = db.exec(select(ProcessingJob)).all()
@@ -307,11 +303,3 @@ def get_processing_job(job_id: UUID, db: Session = Depends(get_db)):
     if not job:
         raise HTTPException(status_code=404, detail="Processing job not found")
     return job
-
-
-@router.get("/test")
-def test():
-    result = celery.send_task(
-        "test",
-    )
-    print(result)

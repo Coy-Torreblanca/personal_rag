@@ -71,33 +71,3 @@ class DoclingParser:
             if hasattr(result.document, "pages")
             else 1,
         }
-
-
-@app.function()
-def modal_hello_world():
-    print("hello world from modal")
-    return "modal said hellow world"
-
-
-@app.function()
-def process_document(document_id: str, job_id: str, presigned_url: str):
-
-    print(f"recieved document_id {document_id!r} and {presigned_url!r}")
-
-    return f"recieved document_id {document_id!r} and {presigned_url!r}"
-
-
-# 4. Local entrypoint to test your deployment
-@app.local_entrypoint()
-def test_main():
-
-    # replace with url.
-    test_url = ""
-
-    parser = DoclingParser()
-
-    response = parser.process_document(test_url)
-
-    from pprint import pprint
-
-    pprint(reponse)

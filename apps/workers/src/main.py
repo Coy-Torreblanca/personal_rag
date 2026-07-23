@@ -78,17 +78,5 @@ def process_document(self, document_id: str, download_url: str, upload_url: str)
     return result
 
 
-@celery.task(name="test")
-def test():
-    print("Hello from workers!")
-    with app.run():
-        modal_result = modal_hello_world.remote()
-    print(f"modal says: {modal_result}")
-
-    import time
-
-    time.sleep(5)
-
-
 if __name__ == "__main__":
     celery.start()

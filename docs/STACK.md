@@ -14,7 +14,7 @@
 
 ### 4. The Data Ingestion Pipeline (For Unstructured Data)
 * **File Storage:** AWS S3 (or Cloudflare R2 to save on egress costs). This is where the physical PDFs and business plans live.
-* **Parsing Engine:** The `unstructured` Python library (or LlamaParse if you want to offload OCR and complex table extraction to an API). This strips the text out of `.docx` and `.pdf` files cleanly so your embedding model can actually read it.
+* **Parsing Engine:** Docling - running on remote, on demand Modal container.
 
 ### 5. The Database (The Unified Vault)
 * **Primary DB:** PostgreSQL. 
