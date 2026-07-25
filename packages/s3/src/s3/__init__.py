@@ -1,5 +1,7 @@
 """30ai R2 package for Cloudflare R2 storage operations."""
 
+import logging
+
 from .client import R2Client
 from .config import R2Config
 from .exceptions import (
@@ -32,6 +34,8 @@ from .utils import (
     sanitize_filename,
     format_file_size,
 )
+
+logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __all__ = [
     # Client

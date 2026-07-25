@@ -7,6 +7,7 @@ This module defines Celery tasks for document processing, including:
   generates embeddings, and updates job/document status in the database.
 """
 
+import logging
 import os
 import modal
 from contextlib import contextmanager
@@ -19,6 +20,10 @@ from database.models import Document, DocumentStatus, ProcessingJob, ProcessingJ
 from database.session import get_db
 from s3.client import R2Client
 from s3.models import FileType, get_file_type_from_extension
+
+from logutil import get_logger
+
+logger = get_logger(__name__)
 
 
 # Create Celery application
@@ -54,7 +59,7 @@ def _fail_job(document_id: str, job_id: str) -> None:
     Mark a document and its processing job as failed in the database.
 
     Sets the document status to ERROR and the processing job status to FAILED.
-    If an error occurs during the update, it rolls back and prints the exception.
+    If an error occurs during the update, it rolls back and logs the exception.
 
     Args:
         document_id: UUID string of the document to fail.
@@ -74,7 +79,7 @@ def _fail_job(document_id: str, job_id: str) -> None:
             db.commit()
         except Exception as ee:
             db.rollback()
-            print(ee)
+            logger.error("Failed to mark job/document as failed", exc_info=ee)
 
 
 @celery.task(name="process_document", bind=True)
@@ -124,12 +129,17 @@ def process_document(
             result = m_cls().process_document.remote(download_url, upload_url)
 
             if result["status"] == "error":
+                logger.error(
+                    "Docling parsing error for document %s: %s",
+                    document_id,
+                    result["message"],
+                )
                 raise ValueError(
                     f"Error in parsing document in Docling: {result['message']}"
                 )
 
         else:
-            print(f"Skipping file {s3_key!r} because it is a text file.")
+            logger.info("Skipping file %r because it is a text file.", s3_key)
             result = {"status": "success", "pages": 1}
 
         client = R2Client(bucket_name=os.environ["BUCKET_NAME"])
@@ -162,6 +172,11 @@ def process_document(
                 raise
 
     except Exception as e:
+        logger.exception(
+            "Document processing failed for document=%s job=%s",
+            document_id,
+            job_id,
+        )
         _fail_job(document_id, job_id)
         raise e
 
@@ -169,4 +184,5 @@ def process_document(
 
 
 if __name__ == "__main__":
+    logger.info("Starting Celery worker")
     celery.start()

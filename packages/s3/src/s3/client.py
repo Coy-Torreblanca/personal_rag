@@ -1,5 +1,7 @@
 """Main R2 client implementation."""
 
+import logging
+
 import boto3
 from botocore.exceptions import ClientError
 from typing import Any
@@ -25,6 +27,8 @@ from .models import (
     PresignedUrlResponse,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class R2Client:
     """Client for Cloudflare R2 operations."""
@@ -38,6 +42,7 @@ class R2Client:
         self._client = None
         self._resource = None
         self.config.validate()
+        logger.debug("R2Client initialized for bucket %s", bucket_name)
 
     @property
     def client(self) -> Any:
@@ -114,6 +119,8 @@ class R2Client:
         """Upload a file from local path."""
         bucket = self._validate_bucket()
 
+        logger.info("Uploading file %s -> s3://%s/%s", file_path, bucket, key)
+
         try:
             extra_args = {}
             if content_type:
@@ -133,11 +140,15 @@ class R2Client:
                 key=key,
             )
 
+            logger.info("Uploaded file s3://%s/%s (%d bytes)", bucket, key, file_metadata.size)
+
             return UploadResponse(metadata=file_metadata, success=True)
         except ClientError as e:
+            logger.error("Upload failed for s3://%s/%s: %s", bucket, key, e)
             self._handle_client_error(e, "Upload")
             raise
         except Exception as e:
+            logger.exception("Upload failed unexpectedly for s3://%s/%s", bucket, key)
             raise UploadError(f"Upload failed: {str(e)}") from e
 
     def upload_bytes(
@@ -149,6 +160,8 @@ class R2Client:
     ) -> UploadResponse:
         """Upload bytes data."""
         bucket = self._validate_bucket()
+
+        logger.info("Uploading %d bytes -> s3://%s/%s", len(data), bucket, key)
 
         try:
             extra_args = {}
@@ -168,11 +181,15 @@ class R2Client:
                 key=key,
             )
 
+            logger.info("Uploaded %d bytes to s3://%s/%s", len(data), bucket, key)
+
             return UploadResponse(metadata=file_metadata, success=True)
         except ClientError as e:
+            logger.error("Bytes upload failed for s3://%s/%s: %s", bucket, key, e)
             self._handle_client_error(e, "Upload")
             raise
         except Exception as e:
+            logger.exception("Bytes upload failed unexpectedly for s3://%s/%s", bucket, key)
             raise UploadError(f"Upload failed: {str(e)}") from e
 
     def download_file(
@@ -182,6 +199,8 @@ class R2Client:
     ) -> DownloadResponse:
         """Download a file to local path."""
         bucket = self._validate_bucket()
+
+        logger.info("Downloading s3://%s/%s -> %s", bucket, key, file_path)
 
         try:
             self.client.download_file(bucket, key, file_path)
@@ -198,6 +217,8 @@ class R2Client:
             with open(file_path, "rb") as f:
                 content = f.read()
 
+            logger.info("Downloaded s3://%s/%s (%d bytes)", bucket, key, len(content))
+
             return DownloadResponse(
                 success=True,
                 content=content,
@@ -207,6 +228,7 @@ class R2Client:
             self._handle_client_error(e, "Download")
             raise
         except Exception as e:
+            logger.exception("Download failed for s3://%s/%s", bucket, key)
             raise DownloadError(f"Download failed: {str(e)}") from e
 
     def download_bytes(
@@ -215,6 +237,8 @@ class R2Client:
     ) -> DownloadResponse:
         """Download file as bytes."""
         bucket = self._validate_bucket()
+
+        logger.debug("Downloading s3://%s/%s as bytes", bucket, key)
 
         try:
             response = self.client.get_object(Bucket=bucket, Key=key)
@@ -226,6 +250,8 @@ class R2Client:
                 key=key,
             )
 
+            logger.debug("Downloaded %d bytes from s3://%s/%s", len(data), bucket, key)
+
             return DownloadResponse(
                 success=True,
                 content=data,
@@ -235,6 +261,7 @@ class R2Client:
             self._handle_client_error(e, "Download")
             raise
         except Exception as e:
+            logger.exception("Bytes download failed for s3://%s/%s", bucket, key)
             raise DownloadError(f"Download failed: {str(e)}") from e
 
     def delete_file(
@@ -244,6 +271,8 @@ class R2Client:
         """Delete a file."""
         bucket = self._validate_bucket()
 
+        logger.info("Deleting s3://%s/%s", bucket, key)
+
         try:
             response = self.client.delete_object(Bucket=bucket, Key=key)
 
@@ -251,6 +280,8 @@ class R2Client:
             version_id = response.get("VersionId")
             delete_marker = response.get("DeleteMarker", False)
             request_charged = response.get("RequestCharged")
+
+            logger.info("Deleted s3://%s/%s", bucket, key)
 
             return DeleteResponse(
                 success=True,
@@ -264,6 +295,7 @@ class R2Client:
             self._handle_client_error(e, "Delete")
             raise
         except Exception as e:
+            logger.exception("Delete failed for s3://%s/%s", bucket, key)
             raise DeleteError(f"Delete failed: {str(e)}") from e
 
     def list_files(
@@ -274,6 +306,8 @@ class R2Client:
     ) -> ListResponse:
         """List files in bucket."""
         bucket = self._validate_bucket()
+
+        logger.debug("Listing files in s3://%s with prefix=%r", bucket, prefix)
 
         try:
             params = {"Bucket": bucket, "Prefix": prefix or "", "MaxKeys": max_keys}
@@ -290,6 +324,8 @@ class R2Client:
             is_truncated = response.get("IsTruncated", False)
             continuation_token = response.get("NextContinuationToken")
 
+            logger.debug("Listed %d files in s3://%s with prefix=%r", len(files), bucket, prefix)
+
             return ListResponse(
                 success=True,
                 bucket=bucket,
@@ -302,6 +338,7 @@ class R2Client:
             self._handle_client_error(e, "List")
             raise
         except Exception as e:
+            logger.exception("List failed for prefix %r", prefix)
             raise ListError(f"List failed for prefix '{prefix}': {str(e)}") from e
 
     def generate_presigned_url(
@@ -314,6 +351,8 @@ class R2Client:
     ) -> PresignedUrlResponse:
         """Generate a presigned URL for temporary access."""
         bucket = self._validate_bucket()
+
+        logger.debug("Generating presigned %s URL for s3://%s/%s", method, bucket, key)
 
         try:
             # Map method to appropriate client method
@@ -346,6 +385,7 @@ class R2Client:
             self._handle_client_error(e, "Generate presigned URL")
             raise
         except Exception as e:
+            logger.exception("Presigned URL generation failed for s3://%s/%s", bucket, key)
             raise PresignedUrlError(f"Generate presigned URL failed: {str(e)}") from e
 
     def file_exists(
@@ -361,6 +401,8 @@ class R2Client:
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") == "404":
                 return False
+            logger.error("Error checking file existence for s3://%s/%s: %s", bucket, key, e)
             raise
         except Exception:
+            logger.exception("Unexpected error checking file existence for s3://%s/%s", bucket, key)
             return False

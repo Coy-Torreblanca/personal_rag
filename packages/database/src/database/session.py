@@ -1,8 +1,11 @@
+import logging
 import os
 from typing import Generator
 
 from sqlmodel import SQLModel, create_engine, Session
 from .models import Organization, User, Document, DocumentChunk, ProcessingJob
+
+logger = logging.getLogger(__name__)
 
 
 def get_db_url() -> str:
@@ -16,11 +19,14 @@ def get_db_url() -> str:
 def create_engine_from_env():
     """Create SQLAlchemy engine from environment variables."""
     database_url = get_db_url()
+    logger.info("Creating database engine (masked url)")
     return create_engine(database_url, pool_pre_ping=True, pool_recycle=3600)
 
 
 # Create engine and session factory
 engine = create_engine_from_env()
+
+logger.debug("Database engine created successfully")
 
 
 def get_db() -> Generator[Session, None, None]:

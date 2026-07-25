@@ -1,3 +1,4 @@
+import logging
 from contextlib import contextmanager
 import os
 import requests
@@ -8,6 +9,8 @@ from sqlmodel import col, delete
 
 from database.models import DocumentChunk
 from database.session import get_db
+
+logger = logging.getLogger(__name__)
 
 client = openai.Client()
 
@@ -30,6 +33,11 @@ def upload_embeddings(
         document_id: UUID string of the document to associate chunks with.
         organization_id: UUID string of the organization owning the chunks.
     """
+    logger.info(
+        "Uploading %d embeddings for document %s",
+        len(file_chunks),
+        document_id,
+    )
     with contextmanager(get_db)() as db:
         sql_statement = delete(DocumentChunk).where(
             DocumentChunk.document_id == UUID(document_id)
@@ -49,6 +57,7 @@ def upload_embeddings(
             db.add(doc_chunk)
 
         db.commit()
+        logger.debug("Successfully uploaded %d chunks for document %s", len(file_chunks), document_id)
 
 
 def generate_embeddings(
@@ -66,19 +75,29 @@ def generate_embeddings(
         document_id: UUID string of the document being processed.
         organization_id: UUID string of the owning organization.
     """
+    logger.info("Generating embeddings for document %s", document_id)
+
     response = requests.get(markdown_download_url)
     response.raise_for_status()
     file_text = response.text
+    logger.debug("Downloaded markdown content (%d chars) for document %s", len(file_text), document_id)
 
     file_chunks = chunk_document(file_text)
+    logger.debug("Split document %s into %d chunks", document_id, len(file_chunks))
 
     response = client.embeddings.create(
         input=file_chunks, model="text-embedding-3-small"
     )
 
     embeddings = [item.embedding for item in response.data]
+    logger.debug(
+        "Generated %d embeddings for document %s",
+        len(embeddings),
+        document_id,
+    )
 
     upload_embeddings(file_chunks, embeddings, document_id, organization_id)
+    logger.info("Finished generating embeddings for document %s", document_id)
 
 
 def chunk_document(text: str) -> list[str]:

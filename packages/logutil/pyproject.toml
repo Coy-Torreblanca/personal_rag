@@ -1,0 +1,15 @@
+[project]
+name = "logutil"
+version = "0.1.0"
+description = "Centralized logging utilities for 30ai platform"
+authors = [
+    {name = "30ai Team", email = "team@30ai.com"},
+]
+dependencies = [
+    "python-json-logger>=2.0.0",
+]
+requires-python = ">=3.11"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

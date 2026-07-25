@@ -9,7 +9,11 @@ The app is deployed separately via `modal deploy` and provides a remote
 class (`DoclingParser`) that is called from the Celery workers in main.py.
 """
 
+import logging
+
 import modal
+
+logger = logging.getLogger(__name__)
 
 APP_NAME = "s3-docling-ocr-pipeline"
 CACHE_DIR = "/root/.cache/docling"
@@ -57,11 +61,11 @@ class DoclingParser:
         """
         from docling.document_converter import DocumentConverter
 
-        print("Initializing docling document converter.")
+        logger.info("Initializing docling document converter.")
 
         self.converter = DocumentConverter()
 
-        print("Converter successfully initialized")
+        logger.info("Converter successfully initialized")
 
     @modal.method()
     def process_document(self, download_url: str, upload_url: str):
@@ -83,15 +87,16 @@ class DoclingParser:
         """
         import httpx
 
-        print("Processing with Docling pipeline.")
+        logger.info("Processing with Docling pipeline.")
 
         try:
             result = self.converter.convert(download_url)
             markdown_content = result.document.export_to_markdown()
         except Exception as e:
+            logger.exception("Failed to fetch S3 object from %s", download_url)
             return {"status": "error", "message": f"failed to fetch s3 obj: {str(e)}"}
 
-        print(f"Document has been processed.")
+        logger.info("Document has been processed.")
 
         # 2. Upload the Markdown string to the presigned S3 upload URL via PUT
         try:
@@ -104,9 +109,10 @@ class DoclingParser:
             )
             upload_response.raise_for_status()
         except Exception as e:
+            logger.exception("Failed to upload to S3")
             return {"status": "error", "message": f"failed to upload to S3: {str(e)}"}
 
-        print("Upload complete!")
+        logger.info("Upload complete!")
         return {
             "status": "success",
             "pages": len(result.document.pages)

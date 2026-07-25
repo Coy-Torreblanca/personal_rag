@@ -1,8 +1,11 @@
 """Configuration class for R2 client."""
 
+import logging
 import os
 from dataclasses import dataclass
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -42,6 +45,10 @@ class R2Config:
         try:
             parsed = urlparse(self.endpoint_url)
             if not parsed.scheme or not parsed.netloc:
+                logger.error("Invalid endpoint URL: %s", self.endpoint_url)
                 raise ValueError(f"Invalid endpoint URL: {self.endpoint_url}")
         except Exception as e:
+            logger.error("Invalid endpoint URL: %s", self.endpoint_url)
             raise ValueError(f"Invalid endpoint URL: {self.endpoint_url}") from e
+
+        logger.debug("R2Config validated successfully for account %s", self.account_id[:8] + "...")
