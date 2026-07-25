@@ -6,6 +6,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+# ── Early mock for openai.Client ─────────────────────────────────
+# ``src.generate_embeddings`` calls ``openai.Client()`` at module
+# level (line 12), which raises ``OpenAIError`` without credentials
+# during test collection.  We patch it before any test module is
+# imported so that collection succeeds.  The ``mock_openai_client``
+# fixture below provides further configuration for tests that
+# exercise ``generate_embeddings``.
+_openai_client_patcher = patch("openai.Client", autospec=True)
+_openai_client_patcher.start()
+
+
 # ── Sample test data ──────────────────────────────────────────────
 
 SAMPLE_DOCUMENT_ID = "4f225ee2-e003-4820-93de-c5de4b2bd2a4"
