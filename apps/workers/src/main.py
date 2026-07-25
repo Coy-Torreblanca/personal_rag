@@ -18,6 +18,7 @@ from .generate_embeddings import generate_embeddings
 from database.models import Document, DocumentStatus, ProcessingJob, ProcessingJobStatus
 from database.session import get_db
 from s3.client import R2Client
+from s3.models import FileType, get_file_type_from_extension
 
 
 # Create Celery application
@@ -84,12 +85,16 @@ def process_document(
     s3_key: str,
     download_url: str,
     upload_url: str,
-) -> str:
+) -> dict[str, str | int]:
     """
     Process a document through the full pipeline: parse, embed, and persist.
 
     This Celery task orchestrates the document processing workflow:
-    1. Calls the Modal-hosted Docling parser to convert the document to markdown.
+    1. Determines the file type from ``s3_key``.
+       - **Plain-text files** (``.txt``, ``.md``, etc.) skip the Modal/Docling
+         parser and are treated as already-converted markdown.
+       - **All other file types** are sent to the Modal-hosted Docling parser
+         for conversion to markdown.
     2. Generates a presigned S3 URL for the resulting markdown file.
     3. Generates embeddings for the markdown content via OpenAI.
     4. Updates the document and job statuses in the database.
@@ -102,11 +107,12 @@ def process_document(
         upload_url: Presigned URL for uploading the parsed markdown result.
 
     Returns:
-        The result from the Docling parser (status dict with pages count).
+        The result dict with ``status`` and ``pages`` count.
 
     Raises:
-        Exception: If any step fails, the job and document are marked as failed
-            and the exception is re-raised.
+        ValueError: If the Docling parser returns an error status.
+        Exception: If any other step fails, the job and document are marked as
+            failed and the exception is re-raised.
     """
     job_id: str = self.request.id
 
@@ -114,7 +120,17 @@ def process_document(
         # TODO Make Async and have modal make fast api call to continue processing.
         m_cls = modal.Cls.from_name(APP_NAME, "DoclingParser")
 
-        result = m_cls().process_document.remote(download_url, upload_url)
+        if get_file_type_from_extension(s3_key) != FileType.TXT:
+            result = m_cls().process_document.remote(download_url, upload_url)
+
+            if result["status"] == "error":
+                raise ValueError(
+                    f"Error in parsing document in Docling: {result['message']}"
+                )
+
+        else:
+            print(f"Skipping file {s3_key!r} because it is a text file.")
+            result = {"status": "success", "pages": 1}
 
         client = R2Client(bucket_name=os.environ["BUCKET_NAME"])
 

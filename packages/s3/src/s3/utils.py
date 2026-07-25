@@ -6,7 +6,10 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from datetime import datetime
 
-from .models import FileType
+from .models import (
+    FileType,
+    get_file_type_from_extension as _canonical_get_file_type_from_extension,
+)
 
 
 def guess_content_type(filename: str, default: str = "application/octet-stream") -> str:
@@ -16,27 +19,11 @@ def guess_content_type(filename: str, default: str = "application/octet-stream")
 
 
 def get_file_type_from_extension(filename: str) -> FileType:
-    """Get file type from file extension."""
-    ext = Path(filename).suffix.lower()
+    """Get file type from file extension.
 
-    if ext == ".pdf":
-        return FileType.PDF
-    elif ext in [".doc", ".docx"]:
-        return FileType.DOCX
-    elif ext == ".txt":
-        return FileType.TXT
-    elif ext == ".csv":
-        return FileType.CSV
-    elif ext == ".json":
-        return FileType.JSON
-    elif ext in [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"]:
-        return FileType.IMAGE
-    elif ext in [".mp3", ".wav", ".ogg", ".flac"]:
-        return FileType.AUDIO
-    elif ext in [".mp4", ".avi", ".mov", ".wmv", ".flv"]:
-        return FileType.VIDEO
-    else:
-        return FileType.OTHER
+    Delegates to the canonical implementation in :mod:`s3.models`.
+    """
+    return _canonical_get_file_type_from_extension(filename)
 
 
 def generate_key(
@@ -138,4 +125,3 @@ def format_file_size(size_bytes: int) -> str:
             return f"{size_bytes:.2f} {unit}"
         size_bytes /= 1024.0  # pyright: ignore[reportAssignmentType]
     return f"{size_bytes:.2f} PB"
-

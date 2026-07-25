@@ -280,3 +280,88 @@ class TestProcessDocument:
 
         assert mock_doc.status.value == "error"
         assert mock_job.status.value == "failed"
+
+    # ── TXT file bypass ──────────────────────────────────────────────
+
+    TXT_S3_KEY = "documents/notes.txt"
+
+    def test_txt_file_skips_modal_parsing(
+        self, mock_modal_cls, mock_r2_client, _mock_main_db
+    ) -> None:
+        """Plain-text files bypass the Modal Docling parser entirely."""
+        result = process_document.run(
+            self.SAMPLE_DOC_ID,
+            self.SAMPLE_ORG_ID,
+            self.TXT_S3_KEY,
+            self.SAMPLE_DOWNLOAD_URL,
+            self.SAMPLE_UPLOAD_URL,
+        )
+
+        # Modal should still be looked up, but ``process_document.remote``
+        # should NOT be called (the TXT branch returns an immediate result).
+        mock_modal_cls.assert_called_once()
+        mock_modal_cls.return_value().process_document.remote.assert_not_called()
+
+        # The result should be a success with pages=1
+        assert result == {"status": "success", "pages": 1}
+
+    def test_txt_file_still_generates_embeddings(
+        self, mock_modal_cls, mock_r2_client, _mock_main_db
+    ) -> None:
+        """Even for TXT files, embeddings and presigned URLs are generated."""
+        process_document.run(
+            self.SAMPLE_DOC_ID,
+            self.SAMPLE_ORG_ID,
+            self.TXT_S3_KEY,
+            self.SAMPLE_DOWNLOAD_URL,
+            self.SAMPLE_UPLOAD_URL,
+        )
+
+        # Presigned URL should be generated with .md appended
+        mock_r2_client.generate_presigned_url.assert_called_once_with(
+            key=self.TXT_S3_KEY + ".md",
+            expiration=3600,
+            method="GET",
+            inline=False,
+        )
+
+    # ── Docling error handling ───────────────────────────────────────
+
+    def test_docling_error_raises_value_error(
+        self, mock_modal_cls, mock_r2_client, _mock_main_db
+    ) -> None:
+        """When Docling returns an error status, a ValueError is raised."""
+        mock_session = _mock_main_db
+
+        # Make the Modal call return an error
+        mock_modal_cls.return_value().process_document.remote.return_value = {
+            "status": "error",
+            "message": "failed to fetch s3 obj: Connection refused",
+        }
+
+        mock_doc = MagicMock()
+        mock_doc.status = MagicMock(value="processing")
+        mock_job = MagicMock()
+        mock_job.status = MagicMock(value="processing")
+
+        def fake_get(model, id_):
+            if "Document" in str(model):
+                return mock_doc
+            return mock_job
+
+        mock_session.get.side_effect = fake_get
+
+        process_document.push_request(id=self.SAMPLE_JOB_ID)
+
+        with pytest.raises(ValueError, match="Error in parsing document in Docling"):
+            process_document.run(
+                self.SAMPLE_DOC_ID,
+                self.SAMPLE_ORG_ID,
+                self.SAMPLE_S3_KEY,
+                self.SAMPLE_DOWNLOAD_URL,
+                self.SAMPLE_UPLOAD_URL,
+            )
+
+        # The job/document should be marked as failed
+        assert mock_doc.status.value == "error"
+        assert mock_job.status.value == "failed"

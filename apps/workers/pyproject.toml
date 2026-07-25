@@ -19,3 +19,9 @@ dependencies = [
 database = { path = "../../packages/database"}
 s3 = { path = "../../packages/s3"}
 
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-mock>=3.15.1",
+]
+

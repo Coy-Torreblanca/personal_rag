@@ -20,6 +20,106 @@ class FileType(str, Enum):
     OTHER = "other"
 
 
+# ── Extension → FileType mapping (single source of truth) ──────
+
+# ── FileType → content-type hint (for list-objects fallback) ────
+
+_FILE_TYPE_CONTENT_TYPE_MAP: dict[FileType, str] = {
+    FileType.PDF: "application/pdf",
+    FileType.DOCX: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    FileType.TXT: "text/plain",
+    FileType.CSV: "text/csv",
+    FileType.JSON: "application/json",
+    FileType.IMAGE: "image/jpeg",
+    FileType.AUDIO: "audio/mpeg",
+    FileType.VIDEO: "video/mp4",
+}
+
+
+_EXTENSION_MAP: dict[str, FileType] = {
+    # Documents
+    ".pdf": FileType.PDF,
+    ".doc": FileType.DOCX,
+    ".docx": FileType.DOCX,
+    # Text
+    ".txt": FileType.TXT,
+    ".md": FileType.TXT,
+    ".html": FileType.TXT,
+    ".htm": FileType.TXT,
+    ".xml": FileType.TXT,
+    ".rst": FileType.TXT,
+    ".rtf": FileType.TXT,
+    # CSV / Tabular
+    ".csv": FileType.CSV,
+    ".tsv": FileType.CSV,
+    ".xls": FileType.CSV,
+    ".xlsx": FileType.CSV,
+    # JSON
+    ".json": FileType.JSON,
+    # Images
+    ".jpg": FileType.IMAGE,
+    ".jpeg": FileType.IMAGE,
+    ".png": FileType.IMAGE,
+    ".gif": FileType.IMAGE,
+    ".webp": FileType.IMAGE,
+    ".bmp": FileType.IMAGE,
+    ".tiff": FileType.IMAGE,
+    ".tif": FileType.IMAGE,
+    ".svg": FileType.IMAGE,
+    ".ico": FileType.IMAGE,
+    # Audio
+    ".mp3": FileType.AUDIO,
+    ".wav": FileType.AUDIO,
+    ".ogg": FileType.AUDIO,
+    ".flac": FileType.AUDIO,
+    ".aac": FileType.AUDIO,
+    ".m4a": FileType.AUDIO,
+    ".wma": FileType.AUDIO,
+    # Video
+    ".mp4": FileType.VIDEO,
+    ".webm": FileType.VIDEO,
+    ".avi": FileType.VIDEO,
+    ".mov": FileType.VIDEO,
+    ".wmv": FileType.VIDEO,
+    ".flv": FileType.VIDEO,
+    ".mkv": FileType.VIDEO,
+    ".m4v": FileType.VIDEO,
+}
+
+
+def get_file_type_from_extension(file_path: str) -> FileType:
+    """
+    Determine the :class:`FileType` from a file path by its extension.
+
+    The lookup is case-insensitive and uses the final extension of the
+    file name.  Unknown extensions return :attr:`FileType.OTHER`.
+
+    Args:
+        file_path: A local path, S3 key, or any string ending with a
+            file name / extension.
+
+    Returns:
+        The matching :class:`FileType`, or :attr:`FileType.OTHER`.
+
+    Example:
+        >>> get_file_type_from_extension("report.pdf")
+        <FileType.PDF: 'pdf'>
+
+        >>> get_file_type_from_extension("notes.txt")
+        <FileType.TXT: 'txt'>
+
+        >>> get_file_type_from_extension("script.py")
+        <FileType.OTHER: 'other'>
+    """
+    # Find the last dot in the base filename (ignore directory components)
+    filename = file_path.rstrip("/").rsplit("/", 1)[-1]
+    if "." not in filename:
+        return FileType.OTHER
+
+    ext = "." + filename.rsplit(".", 1)[-1].lower()
+    return _EXTENSION_MAP.get(ext, FileType.OTHER)
+
+
 def get_file_type_from_content_type(content_type: str) -> FileType:
     """
     Map a content type string to a FileType enum value.
@@ -141,27 +241,10 @@ class FileMetadata:
         etag = cast(str, obj.get("ETag", ""))
         last_modified = cast(datetime | None, obj.get("LastModified"))
 
-        # For list objects, we don't have content_type or metadata
-        # We can try to infer file type from key extension
-        content_type = ""
-        file_type = FileType.OTHER
-        if "." in key:
-            ext = key.split(".")[-1].lower()
-            if ext in ["pdf"]:
-                content_type = "application/pdf"
-                file_type = FileType.PDF
-            elif ext in ["txt", "md", "html", "xml"]:
-                content_type = "text/plain"
-                file_type = FileType.TXT
-            elif ext in ["json"]:
-                content_type = "application/json"
-                file_type = FileType.JSON
-            elif ext in ["csv"]:
-                content_type = "text/csv"
-                file_type = FileType.CSV
-            elif ext in ["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp"]:
-                content_type = "image/jpeg"
-                file_type = FileType.IMAGE
+        # For list objects, we don't have content_type or metadata.
+        # Infer both from the file extension.
+        file_type = get_file_type_from_extension(key)
+        content_type = _FILE_TYPE_CONTENT_TYPE_MAP.get(file_type, "")
 
         return cls(
             key=key,
@@ -261,4 +344,3 @@ class PresignedUrlResponse:
     expires_in: int  # seconds
     method: str  # GET, PUT, etc.
     message: Optional[str] = None
-
