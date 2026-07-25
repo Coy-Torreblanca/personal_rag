@@ -1,3 +1,12 @@
+"""
+Workers - Background job processing for the 30ai platform.
+
+This module defines Celery tasks for document processing, including:
+- Health check endpoint for monitoring.
+- Document processing pipeline that parses documents via Modal/Docling,
+  generates embeddings, and updates job/document status in the database.
+"""
+
 import os
 import modal
 from contextlib import contextmanager
@@ -39,7 +48,17 @@ def health_check():
     return {"status": "healthy", "service": "30ai-workers"}
 
 
-def _fail_job(document_id: str, job_id: str):
+def _fail_job(document_id: str, job_id: str) -> None:
+    """
+    Mark a document and its processing job as failed in the database.
+
+    Sets the document status to ERROR and the processing job status to FAILED.
+    If an error occurs during the update, it rolls back and prints the exception.
+
+    Args:
+        document_id: UUID string of the document to fail.
+        job_id: UUID string of the processing job to fail.
+    """
     with contextmanager(get_db)() as db:
         try:
             if document_id:
@@ -66,6 +85,29 @@ def process_document(
     download_url: str,
     upload_url: str,
 ) -> str:
+    """
+    Process a document through the full pipeline: parse, embed, and persist.
+
+    This Celery task orchestrates the document processing workflow:
+    1. Calls the Modal-hosted Docling parser to convert the document to markdown.
+    2. Generates a presigned S3 URL for the resulting markdown file.
+    3. Generates embeddings for the markdown content via OpenAI.
+    4. Updates the document and job statuses in the database.
+
+    Args:
+        document_id: UUID string of the document to process.
+        organization_id: UUID string of the owning organization.
+        s3_key: The S3 object key for the original document.
+        download_url: Presigned URL for downloading the original document.
+        upload_url: Presigned URL for uploading the parsed markdown result.
+
+    Returns:
+        The result from the Docling parser (status dict with pages count).
+
+    Raises:
+        Exception: If any step fails, the job and document are marked as failed
+            and the exception is re-raised.
+    """
     job_id: str = self.request.id
 
     try:

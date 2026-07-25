@@ -18,7 +18,18 @@ def upload_embeddings(
     document_id: str,
     organization_id: str,
 ) -> None:
+    """
+    Upload document chunks with their embeddings to the database.
 
+    Deletes any existing chunks for the given document, then inserts
+    new chunks with their corresponding vector embeddings.
+
+    Args:
+        file_chunks: List of text chunks from the document.
+        embeddings: List of embedding vectors corresponding to each chunk.
+        document_id: UUID string of the document to associate chunks with.
+        organization_id: UUID string of the organization owning the chunks.
+    """
     with contextmanager(get_db)() as db:
         sql_statement = delete(DocumentChunk).where(
             DocumentChunk.document_id == UUID(document_id)
@@ -43,7 +54,18 @@ def upload_embeddings(
 def generate_embeddings(
     markdown_download_url: str, document_id: str, organization_id: str
 ) -> None:
+    """
+    Download markdown content, chunk it, generate embeddings, and store them.
 
+    Fetches the markdown file from the given presigned URL, splits it into
+    chunks using RecursiveCharacterTextSplitter, generates OpenAI embeddings
+    for each chunk, and persists everything to the database.
+
+    Args:
+        markdown_download_url: Presigned S3 URL to download the markdown file.
+        document_id: UUID string of the document being processed.
+        organization_id: UUID string of the owning organization.
+    """
     response = requests.get(markdown_download_url)
     response.raise_for_status()
     file_text = response.text
@@ -60,7 +82,19 @@ def generate_embeddings(
 
 
 def chunk_document(text: str) -> list[str]:
+    """
+    Split a document text into overlapping chunks for embedding.
 
+    Uses RecursiveCharacterTextSplitter with separators for paragraphs,
+    lines, words, and characters. Each chunk is at most 500 characters
+    with a 50-character overlap between consecutive chunks.
+
+    Args:
+        text: The full document text to split.
+
+    Returns:
+        A list of text chunks ready for embedding.
+    """
     text_splitter = RecursiveCharacterTextSplitter(
         separators=["\n\n", "\n", " ", ""], chunk_size=500, chunk_overlap=50
     )

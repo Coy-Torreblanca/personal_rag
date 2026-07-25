@@ -1,3 +1,14 @@
+"""
+Parse Document - Modal-hosted document parsing service.
+
+This module defines a Modal app that runs a Docling-based document parser.
+Documents are downloaded from a presigned S3 URL, converted to markdown
+using Docling, and the resulting markdown is uploaded back to S3.
+
+The app is deployed separately via `modal deploy` and provides a remote
+class (`DoclingParser`) that is called from the Celery workers in main.py.
+"""
+
 import modal
 
 APP_NAME = "s3-docling-ocr-pipeline"
@@ -26,8 +37,24 @@ app = modal.App(APP_NAME, image=image)
     gpu=None, cpu=2.0, memory=4096, volumes={CACHE_DIR: docling_volume}, timeout=600
 )
 class DoclingParser:
+    """
+    Modal class for parsing documents using Docling.
+
+    Downloads a document from a presigned S3 URL, converts it to markdown
+    using the Docling library, and uploads the result back to S3.
+
+    Attributes:
+        converter: The DocumentConverter instance (initialized on container start).
+    """
+
     @modal.enter()
     def load_modals(self):
+        """
+        Initialize the Docling DocumentConverter on container startup.
+
+        This runs once when the Modal container starts, loading the
+        converter into memory for reuse across method calls.
+        """
         from docling.document_converter import DocumentConverter
 
         print("Initializing docling document converter.")
@@ -36,9 +63,24 @@ class DoclingParser:
 
         print("Converter successfully initialized")
 
-    # TODO change name to parse document.
     @modal.method()
     def process_document(self, download_url: str, upload_url: str):
+        """
+        Download, parse, and upload a document as markdown.
+
+        Fetches the document from `download_url`, converts it to markdown
+        via Docling, and uploads the markdown content to `upload_url`.
+
+        Args:
+            download_url: Presigned S3 URL for downloading the source document.
+            upload_url: Presigned S3 URL for uploading the parsed markdown.
+
+        Returns:
+            A dict with:
+                - status: "success" or "error"
+                - message: Error description (if status is "error")
+                - pages: Number of pages in the processed document (if success).
+        """
         import httpx
 
         print("Processing with Docling pipeline.")

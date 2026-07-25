@@ -1,7 +1,7 @@
 [project]
 name = "workers"
 version = "0.1.0"
-description = "Add your description here"
+description = "Background job processing for the 30ai platform"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -19,9 +19,3 @@ dependencies = [
 database = { path = "../../packages/database"}
 s3 = { path = "../../packages/s3"}
 
-[tool.uv]
-dev_dependencies=[
-    "docling>=2.113.0",
-    "httpx>=0.28.1",
-    "torch>=2.13.0",
-    "torchvision>=0.28.0"]
