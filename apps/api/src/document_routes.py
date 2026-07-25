@@ -205,6 +205,8 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)):
     db.add(job)
 
     document_id = document.id
+    organization_id = document.organization_id
+    s3_key = document.s3_key
 
     try:
         db.flush()
@@ -212,7 +214,13 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)):
         # Dispatch processing to Celery worker
         result = celery.send_task(
             "process_document",
-            args=[str(document_id), download_url, upload_url],
+            args=[
+                str(document_id),
+                str(organization_id),
+                s3_key,
+                download_url,
+                upload_url,
+            ],
             task_id=str(job_id),
         )
         db.commit()

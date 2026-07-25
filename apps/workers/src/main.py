@@ -39,74 +39,73 @@ def health_check():
     return {"status": "healthy", "service": "30ai-workers"}
 
 
-@celery.task(name="process_document", bind=True)
-def process_document(self, document_id: str, download_url: str, upload_url: str) -> str:
-    job_id = self.request.id
-
-    try:
-        m_cls = modal.Cls.from_name(APP_NAME, "DoclingParser")
-
-        result = m_cls().process_document.remote(download_url, upload_url)
-
-        print(result)
-
-    except Exception as e:
-        with contextmanager(get_db)() as db:
-            try:
+def _fail_job(document_id: str, job_id: str):
+    with contextmanager(get_db)() as db:
+        try:
+            if document_id:
                 doc = db.get(Document, document_id)
                 if doc:
                     doc.status = DocumentStatus.ERROR
+            if job_id:
                 job = db.get(ProcessingJob, job_id)
                 if job:
                     job.status = ProcessingJobStatus.FAILED
 
+            db.commit()
+        except Exception as ee:
+            db.rollback()
+            print(ee)
+
+
+@celery.task(name="process_document", bind=True)
+def process_document(
+    self,
+    document_id: str,
+    organization_id: str,
+    s3_key: str,
+    download_url: str,
+    upload_url: str,
+) -> str:
+    job_id: str = self.request.id
+
+    try:
+        # TODO Make Async and have modal make fast api call to continue processing.
+        m_cls = modal.Cls.from_name(APP_NAME, "DoclingParser")
+
+        result = m_cls().process_document.remote(download_url, upload_url)
+
+        client = R2Client(bucket_name=os.environ["BUCKET_NAME"])
+
+        # TODO Add expiration logic.
+        expiration = 3600
+
+        response = client.generate_presigned_url(
+            key=s3_key + ".md",
+            expiration=expiration,
+            method="GET",
+            inline=False,
+        )
+
+        generate_embeddings(response.url, document_id, organization_id)
+
+        with contextmanager(get_db)() as db:
+            try:
+                doc = db.get(Document, document_id)
+                if doc:
+                    doc.status = DocumentStatus.PROCESSED
+                job = db.get(ProcessingJob, job_id)
+                if job:
+                    job.status = ProcessingJobStatus.COMPLETED
+
                 db.commit()
-            except Exception as ee:
+
+            except Exception:
                 db.rollback()
-                print(ee)
+                raise
 
+    except Exception as e:
+        _fail_job(document_id, job_id)
         raise e
-
-    with contextmanager(get_db)() as db:
-        doc = db.get(Document, document_id)
-
-        if not doc:
-            raise ValueError(f"Could not find document: {document_id}")
-        organization_id = str(doc.organization_id)
-        s3_key = doc.s3_key
-
-        if not s3_key:
-            raise ValueError(f"No s3 key defined for document: {document_id}")
-
-    bucket_name = os.environ.get("BUCKET_NAME")
-
-    if not bucket_name:
-        raise ValueError("No bucket name configured")
-
-    client = R2Client(bucket_name=bucket_name)
-
-    # TODO Add expiration logic.
-    expiration = 3600
-
-    response = client.generate_presigned_url(
-        key=s3_key + ".md",
-        expiration=expiration,
-        method="GET",
-        inline=False,
-    )
-
-    generate_embeddings(response.url, document_id, organization_id)
-
-    # TODO Make Async and have modal make fast api call to mark completed.
-    with contextmanager(get_db)() as db:
-        doc = db.get(Document, document_id)
-        if doc:
-            doc.status = DocumentStatus.PROCESSED
-        job = db.get(ProcessingJob, job_id)
-        if job:
-            job.status = ProcessingJobStatus.COMPLETED
-
-        db.commit()
 
     return result
 
