@@ -1,3 +1,18 @@
+"""Document and processing-job management routes.
+
+Endpoints prefixed with ``/api`` and tagged ``documents``:
+
+- ``GET /api/documents`` — List all documents.
+- ``GET /api/documents/upload-url/{file_path:path}`` — Generate a presigned S3/R2 URL for uploading.
+- ``POST /api/documents/{job_id}/process`` — Trigger document processing via Celery.
+- ``DELETE /api/documents/{document_id}`` — Delete a document and its artifacts.
+- ``GET /api/processing-jobs`` — List all processing jobs.
+- ``GET /api/processing-jobs/{job_id}`` — Fetch a single processing job.
+
+All endpoints depend on a SQLModel database session injected via FastAPI's
+``Depends`` mechanism.
+"""
+
 import os
 from uuid import UUID
 
@@ -20,8 +35,15 @@ router = APIRouter(prefix="/api", tags=["documents"])
 
 
 @router.get("/documents", response_model=list[Document])
-def get_documents(db: Session = Depends(get_db)):
-    """Get all documents."""
+def get_documents(db: Session = Depends(get_db)) -> list[Document]:
+    """Retrieve all documents.
+
+    Args:
+        db: Injected database session.
+
+    Returns:
+        List of all ``Document`` records.
+    """
     documents = db.exec(select(Document)).all()
     return documents
 
@@ -29,108 +51,123 @@ def get_documents(db: Session = Depends(get_db)):
 @router.get("/documents/upload-url/{file_path:path}")
 async def get_upload_s3_url(
     file_path: str,
-    organization_id: UUID = Query(),
-    user_id: UUID = Query(),
-    content_type: str = Query(),
+    organization_id: UUID = Query(...),
+    user_id: UUID = Query(...),
+    content_type: str = Query(...),
     db: Session = Depends(get_db),
-):
-    """
-    Generate a presigned URL for uploading a document to S3/R2.
+) -> dict:
+    """Generate a presigned URL for uploading a document to S3/R2 storage.
 
-    - **file_path**: The file path/key in S3 (supports nested paths with /)
-    - **content_type**: Content Type header for file upload.
-    - **organization_id**: Organization ID for access validation
-    - **user_id**: User ID for access validation
-    - **expiration**: URL expiration time in seconds (1 - 604800, default 3600)
+    The endpoint creates a ``Document`` record (status ``UPLOADING``) and a
+    ``ProcessingJob`` record (status ``PENDING``) before returning a
+    time-limited presigned URL that the client can use to upload the file
+    directly to object storage.
+
+    Args:
+        file_path: The object key path (supports nested paths via ``/``).
+        organization_id: UUID of the owning organisation.
+        user_id: UUID of the uploading user.
+        content_type: MIME type of the file being uploaded (e.g. ``application/pdf``).
+        db: Injected database session.
 
     Returns:
-        dict: Contains the presigned URL and metadata
-            - url: The presigned URL for uploading
-            - bucket: The bucket name
-            - key: The S3 object key
-            - method: HTTP method (PUT)
-            - expires_in: Expiration time in seconds
-            - message: Success message
+        dict containing:
+            - ``success``: Always ``True`` when no error occurs.
+            - ``url``: Presigned URL for a PUT request.
+            - ``bucket``: Target S3/R2 bucket name.
+            - ``key``: Full object key (``{organization_id}/{file_path}``).
+            - ``method``: HTTP method (``PUT``).
+            - ``expires_in``: URL validity duration in seconds.
+            - ``message``: Human-readable success message.
+            - ``job_id``: UUID of the newly created processing job.
+
+    Raises:
+        HTTPException 400: If the S3 operation fails.
+        HTTPException 500: If ``BUCKET_NAME`` is not configured or an
+            unexpected error occurs.
     """
-    try:
-        # TODO validate user has access.
-        bucket_name = os.environ.get("BUCKET_NAME")
+    bucket_name = os.environ.get("BUCKET_NAME")
 
-        if not bucket_name:
-            raise HTTPException(status_code=500, detail="No bucket name configured")
+    if not bucket_name:
+        raise HTTPException(status_code=500, detail="No bucket name configured")
 
-        # Construct S3 key with organization prefix
-        key = f"{organization_id}/{file_path}"
+    # Build the object key with an organisation-level prefix for multi-tenancy.
+    key = f"{organization_id}/{file_path}"
 
-        # Create client
-        client = R2Client(bucket_name=bucket_name)
+    client = R2Client(bucket_name=bucket_name)
+    expiration = 3600  # TODO: Make expiration configurable per request.
 
-        # TODO Add expiration logic.
-        expiration = 3600
+    # Persist a Document record so the client can track upload progress.
+    doc = Document(
+        organization_id=organization_id,
+        user_id=user_id,
+        filename=file_path,
+        s3_key=key,
+        status=DocumentStatus.UPLOADING,
+        file_type=content_type,
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
 
-        # TODO - consider upserts
-        ## For example we will be changing uploaded status to uploading but doc is available to user.
-        doc = Document(
-            organization_id=organization_id,
-            user_id=user_id,
-            filename=file_path,
-            s3_key=key,
-            status=DocumentStatus.UPLOADING,
-            file_type=content_type,
-        )
+    # Create a pending processing job that a worker will pick up later.
+    job = ProcessingJob(
+        document_id=doc.id,
+        job_type="Upload+Embedding",
+        status=ProcessingJobStatus.PENDING,
+    )
+    db.add(job)
+    db.commit()
 
-        db.add(doc)
-        db.commit()
-        db.refresh(doc)
+    job_id = job.id
 
-        # Create job
-        job = ProcessingJob(
-            document_id=doc.id,
-            job_type="Upload+Embedding",
-            status=ProcessingJobStatus.PENDING,
-        )
+    # Generate the presigned URL.
+    response = client.generate_presigned_url(
+        key=key,
+        expiration=expiration,
+        method="PUT",
+        inline=False,
+        content_type=content_type,
+    )
 
-        job_id = job.id
-
-        db.add(job)
-        db.commit()
-
-        # Generate presigned URL for PUT operation
-        # TODO validate response
-        response = client.generate_presigned_url(
-            key=key,
-            expiration=expiration,
-            method="PUT",
-            inline=False,
-            content_type=content_type,
-        )
-
-        return {
-            "success": True,
-            "url": response.url,
-            "bucket": response.bucket,
-            "key": response.key,
-            "method": response.method,
-            "expires_in": response.expires_in,
-            "message": response.message,
-            "job_id": job_id,
-        }
-    except S3Error as e:
-        raise HTTPException(
-            status_code=400, detail=f"S3 operation failed: {str(e)}"
-        ) from e
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Presigned URL generation failed: {str(e)}",
-        ) from e
+    return {
+        "success": True,
+        "url": response.url,
+        "bucket": response.bucket,
+        "key": response.key,
+        "method": response.method,
+        "expires_in": response.expires_in,
+        "message": response.message,
+        "job_id": job_id,
+    }
 
 
 @router.post("/documents/{job_id}/process")
-def process_document(job_id: UUID, db: Session = Depends(get_db)):
-    """Trigger processing for a document."""
+def process_document(job_id: UUID, db: Session = Depends(get_db)) -> dict:
+    """Trigger asynchronous document processing via Celery.
+
+    Validates the job and its associated document, generates presigned URLs
+    for downloading the source and uploading the processed result (Markdown),
+    then dispatches a ``process_document`` Celery task to the worker pool.
+
+    Args:
+        job_id: UUID of the ``ProcessingJob`` to execute.
+        db: Injected database session.
+
+    Returns:
+        dict containing:
+            - ``message``: Confirmation text.
+            - ``document_id``: UUID of the document being processed.
+            - ``task_id``: Celery task ID (same as ``job_id``).
+            - ``status``: Always ``"processing"``.
+
+    Raises:
+        HTTPException 400: If the document is already processing, the job is
+            not pending, or validation fails.
+        HTTPException 404: If the job or its document is not found.
+        HTTPException 500: If ``BUCKET_NAME`` is unconfigured or any
+            unexpected error occurs.
+    """
     job = db.get(ProcessingJob, job_id)
 
     if not job:
@@ -142,61 +179,56 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)):
     document = db.get(Document, job.document_id)
 
     if not document:
+        # Orphaned job — mark as failed and bail out.
         job.status = ProcessingJobStatus.FAILED
         db.add(job)
         db.commit()
-
         raise HTTPException(
             status_code=404, detail="Document associated with job not found"
         )
 
-    # Check if document is already being processed
     if document.status == DocumentStatus.PROCESSING:
         raise HTTPException(status_code=400, detail=f"Document is already processing.")
 
     if not document.s3_key:
         raise HTTPException(
-            status_code=500, detail=f"Could not find s3 key for document: {document.id}"
+            status_code=500,
+            detail=f"Could not find s3 key for document: {document.id}",
         )
 
     if job.status != ProcessingJobStatus.PENDING:
         raise HTTPException(
-            status_code=400, detail=f"Job is not in pending status: {job.status.value}"
+            status_code=400,
+            detail=f"Job is not in pending status: {job.status.value}",
         )
 
-    # TODO - Validate that the document is uploaded.
     bucket_name = os.environ.get("BUCKET_NAME")
-
     if not bucket_name:
         raise HTTPException(status_code=500, detail="No bucket name configured")
 
-    # Create client
-    # TODO move presinged url generation to worker.
     client = R2Client(bucket_name=bucket_name)
+    # TODO - Validate that the document is uploaded.
+    expiration = 3600  # TODO: Make expiration configurable.
 
-    # TODO Add expiration logic.
-    expiration = 3600
-
-    # TODO validate response
-    response = client.generate_presigned_url(
+    # Presigned URL for downloading the original document.
+    download_response = client.generate_presigned_url(
         key=document.s3_key,
         expiration=expiration,
         method="GET",
         inline=False,
     )
+    download_url = download_response.url
 
-    download_url = response.url
-
-    response = client.generate_presigned_url(
+    # Presigned URL for uploading the processed Markdown output.
+    upload_response = client.generate_presigned_url(
         key=document.s3_key + ".md",
         expiration=expiration,
         method="PUT",
         inline=False,
     )
+    upload_url = upload_response.url
 
-    upload_url = response.url
-
-    # Update document status
+    # Transition statuses.
     document.status = DocumentStatus.PROCESSING
     db.add(document)
 
@@ -211,7 +243,7 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)):
     try:
         db.flush()
 
-        # Dispatch processing to Celery worker
+        # Dispatch the long-running processing task to Celery workers.
         result = celery.send_task(
             "process_document",
             args=[
@@ -224,7 +256,6 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)):
             task_id=str(job_id),
         )
         db.commit()
-
     except Exception as e:
         db.rollback()
         raise e
@@ -238,48 +269,53 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.delete("/documents/{document_id}", status_code=200)
-def delete_document(document_id: UUID, db: Session = Depends(get_db)):
-    """Delete a document and its associated data.
+def delete_document(document_id: UUID, db: Session = Depends(get_db)) -> dict:
+    """Delete a document and all associated artefacts.
 
-    Removes the document from the database, deletes the file from S3/R2 storage,
-    and removes any associated processing jobs.
+    Removes the document record, its processing jobs, and the underlying
+    file from S3/R2 storage.
 
-    - **document_id**: The UUID of the document to delete
+    Args:
+        document_id: UUID of the document to delete.
+        db: Injected database session.
 
     Returns:
-        dict: Confirmation of deletion
-            - success: True if deletion was successful
-            - message: Confirmation message
-            - document_id: The ID of the deleted document
+        dict containing:
+            - ``success``: Always ``True`` on success.
+            - ``message``: Human-readable confirmation.
+            - ``document_id``: The deleted document's UUID.
+
+    Raises:
+        HTTPException 404: If the document does not exist.
+        HTTPException 500: If ``BUCKET_NAME`` is unconfigured, the S3
+            deletion fails, or an unexpected error occurs.
     """
     document = db.get(Document, document_id)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
     bucket_name = os.environ.get("BUCKET_NAME")
-
     if not bucket_name:
         raise HTTPException(status_code=500, detail="No bucket name configured")
 
     try:
-        # Delete the file from S3/R2 if it has a key
+        # Remove the file from object storage if it exists.
         if document.s3_key:
             try:
                 client = R2Client(bucket_name=bucket_name)
                 client.delete_file(key=document.s3_key)
             except S3Error as e:
                 raise HTTPException(
-                    status_code=500, detail="Error deleted the target file."
-                )
+                    status_code=500, detail="Error deleting the target file."
+                ) from e
 
-        # Delete associated processing jobs
+        # Cascade-delete all associated processing jobs.
         jobs = db.exec(
             select(ProcessingJob).where(ProcessingJob.document_id == document_id)
         ).all()
         for job in jobs:
             db.delete(job)
 
-        # Delete the document
         db.delete(document)
         db.commit()
 
@@ -295,19 +331,37 @@ def delete_document(document_id: UUID, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=500,
             detail=f"Document deletion failed: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/processing-jobs", response_model=list[ProcessingJob])
-def get_processing_jobs(db: Session = Depends(get_db)):
-    """Get all processing jobs."""
+def get_processing_jobs(db: Session = Depends(get_db)) -> list[ProcessingJob]:
+    """Retrieve all processing jobs.
+
+    Args:
+        db: Injected database session.
+
+    Returns:
+        List of all ``ProcessingJob`` records.
+    """
     jobs = db.exec(select(ProcessingJob)).all()
     return jobs
 
 
 @router.get("/processing-jobs/{job_id}", response_model=ProcessingJob)
-def get_processing_job(job_id: UUID, db: Session = Depends(get_db)):
-    """Get a specific processing job."""
+def get_processing_job(job_id: UUID, db: Session = Depends(get_db)) -> ProcessingJob:
+    """Retrieve a single processing job by its UUID.
+
+    Args:
+        job_id: UUID of the processing job.
+        db: Injected database session.
+
+    Returns:
+        The matching ``ProcessingJob`` record.
+
+    Raises:
+        HTTPException 404: If no job with the given ID exists.
+    """
     job = db.get(ProcessingJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Processing job not found")
