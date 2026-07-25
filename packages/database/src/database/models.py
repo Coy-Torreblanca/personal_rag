@@ -113,7 +113,7 @@ class DocumentBase(SQLModel):
     filename: str = Field(max_length=255, nullable=False)
     file_type: str = Field(max_length=50, nullable=False)  # pdf, docx, txt, etc.
     file_size: int | None = Field(default=None)  # Size in bytes
-    s3_key: str | None = Field(default=None, max_length=500)  # S3 object key
+    s3_key: str = Field(default=None, max_length=500)  # S3 object key
     status: DocumentStatus = Field(default=DocumentStatus.UPLOADED, max_length=50)
     meta_data: dict[str, object] = Field(default={}, sa_column=Column(JSON))
 

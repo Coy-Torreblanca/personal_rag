@@ -78,7 +78,6 @@ def process_document(self, document_id: str, download_url: str, upload_url: str)
         if not s3_key:
             raise ValueError(f"No s3 key defined for document: {document_id}")
 
-        # TODO - Validate that the document is uploaded.
     bucket_name = os.environ.get("BUCKET_NAME")
 
     if not bucket_name:
