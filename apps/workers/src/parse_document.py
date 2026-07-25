@@ -36,13 +36,13 @@ class DoclingParser:
 
         print("Converter successfully initialized")
 
+    # TODO change name to parse document.
     @modal.method()
     def process_document(self, download_url: str, upload_url: str):
         import httpx
 
         print("Processing with Docling pipeline.")
 
-        # TODO upload to url.
         try:
             result = self.converter.convert(download_url)
             markdown_content = result.document.export_to_markdown()

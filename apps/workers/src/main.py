@@ -3,9 +3,12 @@ import modal
 from contextlib import contextmanager
 from celery import Celery
 
-from .process_document import APP_NAME
+
+from .parse_document import APP_NAME
+from .generate_embeddings import generate_embeddings
 from database.models import Document, DocumentStatus, ProcessingJob, ProcessingJobStatus
 from database.session import get_db
+from s3.client import R2Client
 
 
 # Create Celery application
@@ -63,6 +66,37 @@ def process_document(self, document_id: str, download_url: str, upload_url: str)
                 print(ee)
 
         raise e
+
+    with contextmanager(get_db)() as db:
+        doc = db.get(Document, document_id)
+
+        if not doc:
+            raise ValueError(f"Could not find document: {document_id}")
+        organization_id = str(doc.organization_id)
+        s3_key = doc.s3_key
+
+        if not s3_key:
+            raise ValueError(f"No s3 key defined for document: {document_id}")
+
+        # TODO - Validate that the document is uploaded.
+    bucket_name = os.environ.get("BUCKET_NAME")
+
+    if not bucket_name:
+        raise ValueError("No bucket name configured")
+
+    client = R2Client(bucket_name=bucket_name)
+
+    # TODO Add expiration logic.
+    expiration = 3600
+
+    response = client.generate_presigned_url(
+        key=s3_key + ".md",
+        expiration=expiration,
+        method="GET",
+        inline=False,
+    )
+
+    generate_embeddings(response.url, document_id, organization_id)
 
     # TODO Make Async and have modal make fast api call to mark completed.
     with contextmanager(get_db)() as db:

@@ -8,10 +8,16 @@ dependencies = [
     "celery[redis]>=5.6.3",
     "modal>=1.5.0",
     "database",
+    "s3",
+    "langchain-text-splitters>=1.1.2",
+    "requests>=2.34.2",
+    "openai>=2.48.0",
+    "sqlmodel>=0.0.39",
 ]
 
 [tool.uv.sources]
 database = { path = "../../packages/database"}
+s3 = { path = "../../packages/s3"}
 
 [tool.uv]
 dev_dependencies=[

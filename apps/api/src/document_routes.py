@@ -171,6 +171,7 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="No bucket name configured")
 
     # Create client
+    # TODO move presinged url generation to worker.
     client = R2Client(bucket_name=bucket_name)
 
     # TODO Add expiration logic.

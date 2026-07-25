@@ -45,6 +45,13 @@ services:
       - ENVIRONMENT=development
       - MODAL_TOKEN_ID=${MODAL_TOKEN_ID}
       - MODAL_TOKEN_SECRET=${MODAL_TOKEN_SECRET}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - BUCKET_NAME=${BUCKET_NAME}
+      - R2_ACCOUNT_ID=${R2_ACCOUNT_ID}
+      - R2_S3_API=${R2_S3_API}
+      - R2_TOKEN_VALUE=${R2_TOKEN_VALUE}
+      - R2_ACCESS_ID=${R2_ACCESS_ID}
+      - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}
     volumes:
       - ./apps/workers:/app
       - ./packages:/packages
@@ -108,5 +115,7 @@ volumes:
 networks:
   30ai-network:
     driver: bridge
+
+
 
 
