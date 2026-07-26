@@ -4,6 +4,7 @@ All S3, database, and Celery interactions are mocked so that tests run
 without any external infrastructure.
 """
 
+import unittest
 from uuid import UUID, uuid4
 from unittest.mock import MagicMock
 
@@ -16,6 +17,7 @@ from database.models import (
     ProcessingJob,
     ProcessingJobStatus,
 )
+from s3.exceptions import S3Error
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +361,66 @@ class TestDeleteDocument:
         assert resp.status_code == 200
         # The S3 delete + job cascade should complete without error.
         assert resp.json()["success"] is True
+
+    async def test_deletes_processed_md_file(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """When a processed ``.md`` file exists, it should also be deleted."""
+        doc_id = uuid4()
+        doc = make_document(id=doc_id, s3_key="org/doc.pdf")
+        db_session.get.return_value = doc
+
+        resp = await async_client.delete(f"/api/documents/{doc_id}")
+        assert resp.status_code == 200
+
+        # The original file and the .md file should both be deleted.
+        expected_calls = [
+            unittest.mock.call(key="org/doc.pdf"),
+            unittest.mock.call(key="org/doc.pdf.md"),
+        ]
+        r2_client.delete_file.assert_has_calls(expected_calls, any_order=False)
+        assert r2_client.delete_file.call_count == 2
+
+    async def test_skips_missing_processed_md_file(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """If the processed ``.md`` file does not exist, deletion still succeeds."""
+        doc_id = uuid4()
+        doc = make_document(id=doc_id, s3_key="org/doc.pdf")
+        db_session.get.return_value = doc
+
+        # Make the second delete_file call (for .md) raise S3Error.
+        r2_client.delete_file.side_effect = [
+            MagicMock(success=True),  # original file — succeeds
+            S3Error("File not found"),  # .md file — not found
+        ]
+
+        resp = await async_client.delete(f"/api/documents/{doc_id}")
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+
+    async def test_s3_error_on_original_file_raises_500(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """If the original file delete fails, a 500 is returned."""
+        doc_id = uuid4()
+        doc = make_document(id=doc_id, s3_key="org/doc.pdf")
+        db_session.get.return_value = doc
+
+        r2_client.delete_file.side_effect = S3Error("Network error")
+
+        resp = await async_client.delete(f"/api/documents/{doc_id}")
+        assert resp.status_code == 500
+        assert "Error deleting the target file" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

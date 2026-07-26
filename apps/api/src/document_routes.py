@@ -347,8 +347,8 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)) -> dict:
 def delete_document(document_id: UUID, db: Session = Depends(get_db)) -> dict:
     """Delete a document and all associated artefacts.
 
-    Removes the document record, its processing jobs, and the underlying
-    file from S3/R2 storage.
+    Removes the document record, its processing jobs, and both the
+    original file and processed ``.md`` output from S3/R2 storage.
 
     Args:
         document_id: UUID of the document to delete.
@@ -385,6 +385,22 @@ def delete_document(document_id: UUID, db: Session = Depends(get_db)) -> dict:
                 logger.debug(
                     "Deleted S3 file %s for document %s", document.s3_key, document_id
                 )
+
+                try:
+                    processed_document = f"{document.s3_key}.md"
+                    client.delete_file(key=processed_document)
+                    logger.debug(
+                        "Deleted processed S3 file %s for document %s",
+                        processed_document,
+                        document_id,
+                    )
+                except S3Error:
+                    logger.debug(
+                        "Processed S3 file %s not found for document %s, skipping",
+                        processed_document,
+                        document_id,
+                    )
+
             except S3Error as e:
                 logger.error("Failed to delete S3 file %s: %s", document.s3_key, e)
                 raise HTTPException(
