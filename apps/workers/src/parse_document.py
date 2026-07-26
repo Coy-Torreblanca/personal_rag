@@ -23,12 +23,14 @@ docling_volume = modal.Volume.from_name(
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .apt_install("libgomp1")
+    .apt_install("libgomp1", "ffmpeg", "libgl1")
     .pip_install(
         "docling>=2.0.0",
         "torch",
         "torchvision",
         "httpx",
+        "easyocr",
+        "openai-whisper",
         extra_options="--extra-index-url www.download.pytorch.org/whl/cpu",
     )
     .env({"HF_HOME": CACHE_DIR})
@@ -93,8 +95,11 @@ class DoclingParser:
             result = self.converter.convert(download_url)
             markdown_content = result.document.export_to_markdown()
         except Exception as e:
-            logger.exception("Failed to fetch S3 object from %s", download_url)
-            return {"status": "error", "message": f"failed to fetch s3 obj: {str(e)}"}
+            logger.exception("Docling conversion failed for %s", download_url)
+            return {
+                "status": "error",
+                "message": f"Docling conversion failed: {str(e)}",
+            }
 
         logger.info("Document has been processed.")
 
