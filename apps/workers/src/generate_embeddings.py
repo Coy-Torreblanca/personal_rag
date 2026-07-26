@@ -1,6 +1,5 @@
 import logging
 from contextlib import contextmanager
-import os
 import requests
 import openai
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -57,7 +56,11 @@ def upload_embeddings(
             db.add(doc_chunk)
 
         db.commit()
-        logger.debug("Successfully uploaded %d chunks for document %s", len(file_chunks), document_id)
+        logger.debug(
+            "Successfully uploaded %d chunks for document %s",
+            len(file_chunks),
+            document_id,
+        )
 
 
 def generate_embeddings(
@@ -80,7 +83,11 @@ def generate_embeddings(
     response = requests.get(markdown_download_url)
     response.raise_for_status()
     file_text = response.text
-    logger.debug("Downloaded markdown content (%d chars) for document %s", len(file_text), document_id)
+    logger.debug(
+        "Downloaded markdown content (%d chars) for document %s",
+        len(file_text),
+        document_id,
+    )
 
     file_chunks = chunk_document(file_text)
     logger.debug("Split document %s into %d chunks", document_id, len(file_chunks))
