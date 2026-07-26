@@ -64,6 +64,10 @@ def mock_db_session() -> MagicMock:
     # ``get()`` returns None by default (object-not-found behaviour)
     session.get.return_value = None
 
+    # ``scalar()`` — used by the duplicate-upload guard clause; default to
+    # 0 (no active jobs found) so the happy path is unaffected.
+    session.scalar.return_value = 0
+
     # All other methods (add, commit, flush, refresh, delete, rollback)
     # are plain MagicMocks that accept any call and return themselves.
     return session
@@ -119,21 +123,41 @@ def _mock_env_vars() -> Generator[None, None, None]:
 
 
 @pytest.fixture(autouse=True)
-def _mock_r2_client() -> Generator[MagicMock, None, None]:
+def _mock_r2_client(mock_r2_instance: MagicMock) -> Generator[MagicMock, None, None]:
     """Replace ``R2Client`` with a mock in document routes.
 
-    The mock's ``generate_presigned_url`` returns a simple object with
-    ``.url``, ``.bucket``, ``.key``, ``.method``, ``.expires_in`` and
-    ``.message`` attributes.
-
-    The mock's ``delete_file`` returns a simple success response.
+    Delegates to ``mock_r2_instance`` for the mock configuration.
     """
     from unittest.mock import patch
 
     mock_client_cls = MagicMock()
+    mock_client_cls.return_value = mock_r2_instance
+
+    with patch("src.document_routes.R2Client", mock_client_cls):
+        yield mock_r2_instance
+
+
+@pytest.fixture
+def r2_client(mock_r2_instance: MagicMock) -> MagicMock:
+    """Public fixture giving tests access to the mocked ``R2Client`` instance.
+
+    Use this to override default behaviour such as ``file_exists``::
+
+        def test_foo(r2_client):
+            r2_client.file_exists.return_value = False
+    """
+    return mock_r2_instance
+
+
+@pytest.fixture
+def mock_r2_instance() -> Generator[MagicMock, None, None]:
+    """Internal fixture that creates the mock R2 instance.
+
+    Separated so both ``_mock_r2_client`` and ``r2_client`` can reference it
+    without duplicating configuration.
+    """
     mock_instance = MagicMock()
 
-    # Build a simple response-like object for presigned URLs.
     presigned_response = MagicMock()
     presigned_response.url = "https://test-bucket.r2.dev/test-key"
     presigned_response.bucket = "test-bucket"
@@ -146,10 +170,7 @@ def _mock_r2_client() -> Generator[MagicMock, None, None]:
     mock_instance.delete_file.return_value = MagicMock(success=True)
     mock_instance.file_exists.return_value = True
 
-    mock_client_cls.return_value = mock_instance
-
-    with patch("src.document_routes.R2Client", mock_client_cls):
-        yield mock_instance
+    return mock_instance
 
 
 # ---------------------------------------------------------------------------

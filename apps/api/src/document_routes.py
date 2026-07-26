@@ -17,7 +17,7 @@ import os
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlmodel import Session, select
+from sqlmodel import Session, select, func
 
 from database.models import (
     Document,
@@ -87,7 +87,9 @@ async def get_upload_s3_url(
             - ``job_id``: UUID of the newly created processing job.
 
     Raises:
-        HTTPException 400: If the S3 operation fails.
+        HTTPException 400: If the S3 operation fails, or if a document with
+            this S3 key already has an active (non-failed, non-completed)
+            processing job.
         HTTPException 500: If ``BUCKET_NAME`` is not configured or an
             unexpected error occurs.
     """
@@ -99,6 +101,40 @@ async def get_upload_s3_url(
 
     # Build the object key with an organisation-level prefix for multi-tenancy.
     key = f"{organization_id}/{file_path}"
+
+    # Ensure there are no other jobs running for this key.
+    statement = select(Document).where(Document.s3_key == key)
+    existing_docs = db.exec(statement)
+
+    for doc in existing_docs:
+        # Access the column directly so the SQL NOT IN clause works correctly.
+        # Pyright doesn't recognise column operators on SQLModel fields, so
+        # we cast via ``__table__.c`` (runtime-valid) and suppress the type
+        # checker warning.
+        status_col = ProcessingJob.__table__.c.status  # pyright: ignore[reportAttributeAccessIssue]
+        statement = (
+            select(func.count())
+            .select_from(ProcessingJob)
+            .where(
+                ProcessingJob.document_id == doc.id,
+                status_col.notin_(
+                    [ProcessingJobStatus.FAILED, ProcessingJobStatus.COMPLETED]
+                ),
+            )
+        )
+
+        if db.scalar(statement) != 0:
+            logger.warning(
+                "Upload blocked for key %s — active processing job found for document %s",
+                key,
+                doc.id,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"A document with this S3 key is already being processed: {key!r}",
+            )
+
+    logger.debug("No active jobs for key %s — proceeding with upload", key)
 
     client = R2Client(bucket_name=bucket_name)
     expiration = 3600  # TODO: Make expiration configurable per request.
@@ -179,7 +215,8 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)) -> dict:
 
     Raises:
         HTTPException 400: If the document is already processing, the job is
-            not pending, or validation fails.
+            not pending, the source file has not been uploaded to R2 yet, or
+            validation fails.
         HTTPException 404: If the job or its document is not found.
         HTTPException 500: If ``BUCKET_NAME`` is unconfigured or any
             unexpected error occurs.
@@ -227,7 +264,17 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=500, detail="No bucket name configured")
 
     client = R2Client(bucket_name=bucket_name)
-    # TODO - Validate that the document is uploaded.
+
+    # Validate that the file actually exists in R2 before proceeding.
+    if not client.file_exists(key=document.s3_key):
+        logger.warning(
+            "Document %s key %s not found in R2", document.id, document.s3_key
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="The document file has not been uploaded yet. Please upload the file before processing.",
+        )
+
     expiration = 3600  # TODO: Make expiration configurable.
 
     # Presigned URL for downloading the original document.

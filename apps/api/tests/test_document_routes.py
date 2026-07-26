@@ -139,6 +139,68 @@ class TestGetUploadUrl:
         resp = await async_client.get("/api/documents/upload-url/doc.pdf")
         assert resp.status_code == 422
 
+    async def test_prevents_concurrent_processing(
+        self, async_client: AsyncClient, db_session: MagicMock
+    ) -> None:
+        """Return 400 if a doc with this key already has an active (non-failed, non-completed) job."""
+        org_id = uuid4()
+        user_id = uuid4()
+        key = f"{org_id}/my-doc.pdf"
+
+        existing_doc = make_document(
+            organization_id=org_id,
+            s3_key=key,
+        )
+
+        # Make ``db.exec(select(Document).where(...))`` iterate over the
+        # existing document.
+        db_session.exec.return_value.__iter__.return_value = iter([existing_doc])
+
+        # Simulate an active (PENDING) job found for that document.
+        db_session.scalar.return_value = 1
+
+        resp = await async_client.get(
+            "/api/documents/upload-url/my-doc.pdf",
+            params={
+                "organization_id": str(org_id),
+                "user_id": str(user_id),
+                "content_type": "application/pdf",
+            },
+        )
+        assert resp.status_code == 400
+        assert "already being processed" in resp.json()["detail"]
+
+    async def test_allows_upload_when_previous_jobs_completed(
+        self, async_client: AsyncClient, db_session: MagicMock
+    ) -> None:
+        """Allow upload when the only existing jobs are COMPLETED or FAILED."""
+        org_id = uuid4()
+        user_id = uuid4()
+        key = f"{org_id}/my-doc.pdf"
+
+        existing_doc = make_document(
+            organization_id=org_id,
+            s3_key=key,
+        )
+
+        # Make ``db.exec(select(Document).where(...))`` iterate over the
+        # existing document.
+        db_session.exec.return_value.__iter__.return_value = iter([existing_doc])
+
+        # No active jobs — only completed/failed ones.
+        db_session.scalar.return_value = 0
+
+        resp = await async_client.get(
+            "/api/documents/upload-url/my-doc.pdf",
+            params={
+                "organization_id": str(org_id),
+                "user_id": str(user_id),
+                "content_type": "application/pdf",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+
 
 # ---------------------------------------------------------------------------
 # POST /api/documents/{job_id}/process
@@ -234,6 +296,25 @@ class TestProcessDocument:
         resp = await async_client.post(f"/api/documents/{job_id}/process")
         assert resp.status_code == 400
         assert "not in pending status" in resp.json()["detail"]
+
+    async def test_rejects_missing_file_in_r2(
+        self, async_client: AsyncClient, db_session: MagicMock, r2_client: MagicMock
+    ) -> None:
+        """Return 400 if the source file hasn't been uploaded to R2 yet."""
+        job_id = uuid4()
+        doc = make_document(status=DocumentStatus.UPLOADED, s3_key="some/key.pdf")
+        job = make_processing_job(
+            id=job_id, document_id=doc.id, status=ProcessingJobStatus.PENDING
+        )
+
+        db_session.get.side_effect = self._make_get_side_effect(job_id, job, doc)
+
+        # Simulate file not found in R2.
+        r2_client.file_exists.return_value = False
+
+        resp = await async_client.post(f"/api/documents/{job_id}/process")
+        assert resp.status_code == 400
+        assert "not been uploaded" in resp.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------
