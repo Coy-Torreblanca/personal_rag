@@ -1,5 +1,6 @@
 """FastAPI middleware for structured request logging."""
 
+import logging
 import time
 import uuid
 from typing import Callable
@@ -7,9 +8,7 @@ from typing import Callable
 from fastapi import FastAPI, Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from . import get_logger
-
-logger = get_logger("api.request")
+logger = logging.getLogger("api.request")
 
 
 class RequestLogMiddleware(BaseHTTPMiddleware):

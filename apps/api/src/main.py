@@ -1,3 +1,16 @@
+"""FastAPI application entry point for the 30ai API service.
+
+This module initializes the FastAPI application with:
+- CORS middleware configured for the frontend origin
+- Routers for authentication and document management
+- Health check and root endpoints for service discovery
+
+Environment variables expected:
+- DATABASE_URL: PostgreSQL connection string (default: localhost)
+- REDIS_URL: Redis connection string for Celery broker (default: localhost)
+- BUCKET_NAME: S3/R2 bucket name for document storage
+"""
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,14 +27,17 @@ logger.info("Starting 30ai API server")
 
 app = FastAPI(
     title="30ai API",
-    description="AI-powered business intelligence platform",
+    description="AI-powered business intelligence platform — document ingestion, processing, and retrieval API",
     version="0.1.0",
 )
 
-# Configure CORS
+# ---------------------------------------------------------------------------
+# CORS
+# ---------------------------------------------------------------------------
+# Restrict origins in production; wildcards allowed here for local development.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Frontend URL
+    allow_origins=["http://localhost:3000"],  # Frontend dev server
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -30,21 +46,35 @@ app.add_middleware(
 # Add request logging middleware
 add_logging_middleware(app)
 
-# Include routers
+# ---------------------------------------------------------------------------
+# Routers
+# ---------------------------------------------------------------------------
 app.include_router(auth_router)
 app.include_router(document_router)
 
 
 @app.get("/")
-def read_root():
-    """Root endpoint."""
+def read_root() -> dict[str, str]:
+    """Root endpoint.
+
+    Returns a welcome message for the API.
+
+    Returns:
+        dict: A simple greeting message.
+    """
     logger.info("Root endpoint called")
     return {"message": "Welcome to 30ai API"}
 
 
 @app.get("/health")
-def health_check():
-    """Health check endpoint."""
+def health_check() -> dict[str, str]:
+    """Health check endpoint.
+
+    Used by load balancers and orchestrators to verify the service is alive.
+
+    Returns:
+        dict: Status indicating the service is healthy.
+    """
     logger.debug("Health check endpoint called")
     return {"status": "healthy"}
 

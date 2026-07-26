@@ -185,4 +185,4 @@ def process_document(
 
 if __name__ == "__main__":
     logger.info("Starting Celery worker")
-    celery.start()
+    celery.start(argv=["worker", "--loglevel=info"])

@@ -43,6 +43,8 @@ _EXTENSION_MAP: dict[str, FileType] = {
     ".docx": FileType.DOCX,
     # Text
     ".txt": FileType.TXT,
+    ".yaml": FileType.TXT,
+    ".yml": FileType.TXT,
     ".md": FileType.TXT,
     ".html": FileType.TXT,
     ".htm": FileType.TXT,
