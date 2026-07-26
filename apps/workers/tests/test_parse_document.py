@@ -50,18 +50,14 @@ def _mock_docling_module() -> None:
         mock_docling.document_converter.DocumentConverter = MagicMock()
 
         sys.modules["docling"] = mock_docling
-        sys.modules["docling.document_converter"] = (
-            mock_docling.document_converter
-        )
+        sys.modules["docling.document_converter"] = mock_docling.document_converter
 
 
 @pytest.fixture(autouse=True)
 def _setup_converter_mock() -> None:
     """Patch ``DocumentConverter`` before each test and extract raw
     functions from Modal wrappers."""
-    with patch(
-        "docling.document_converter.DocumentConverter"
-    ) as mock_cls:
+    with patch("docling.document_converter.DocumentConverter") as mock_cls:
         # Get the original Python class (before Modal decoration)
         user_cls = DoclingParser._get_user_cls()
 
@@ -122,9 +118,7 @@ class TestDoclingParser:
 
         assert result["status"] == "success"
         assert result["pages"] == 3
-        mock_converter.convert.assert_called_once_with(
-            "https://example.com/doc.pdf"
-        )
+        mock_converter.convert.assert_called_once_with("https://example.com/doc.pdf")
 
     def test_process_document_no_pages_attribute(
         self, _setup_converter_mock, _patch_httpx
@@ -163,7 +157,7 @@ class TestDoclingParser:
         )
 
         assert result["status"] == "error"
-        assert "failed to fetch s3 obj" in result["message"]
+        assert "Docling conversion failed: Conversion error" in result["message"]
 
     def test_process_document_upload_failure(
         self, _setup_converter_mock, _patch_httpx
