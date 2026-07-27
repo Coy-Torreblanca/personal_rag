@@ -9,11 +9,11 @@ The app is deployed separately via `modal deploy` and provides a remote
 class (`DoclingParser`) that is called from the Celery workers in main.py.
 """
 
-import logging
+from logutil import get_logger
 
 import modal
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 APP_NAME = "s3-docling-ocr-pipeline"
 CACHE_DIR = "/root/.cache/docling"

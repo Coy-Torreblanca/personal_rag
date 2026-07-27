@@ -1,5 +1,6 @@
 """Shared fixtures and configuration for worker tests."""
 
+import os
 from collections.abc import Generator
 from unittest.mock import MagicMock, patch
 

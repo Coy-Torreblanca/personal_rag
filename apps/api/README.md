@@ -4,6 +4,60 @@
 
 See main DEPLOYMENT.md.
 
+## Environment Variables
+
+The API requires the following environment variables in addition to the
+standard database and S3 configuration:
+
+| Variable | Description |
+|----------|-------------|
+| `OPENAI_API_KEY` | OpenAI API key (used for embedding queries with ``text-embedding-3-small``) |
+| `COHERE_API_KEY` | Cohere API key (used for re-ranking search results) |
+| `BUCKET_NAME` | S3/R2 bucket name for document storage |
+| `DATABASE_URL` | PostgreSQL connection string |
+| `REDIS_URL` | Redis connection string for Celery broker |
+| `R2_ACCESS_ID` | R2 access key ID |
+| `R2_SECRET_ACCESS_KEY` | R2 secret access key |
+
+These are configured in ``docker-compose.yml`` at the repository root.
+
+## Semantic Search
+
+The API provides a semantic search endpoint that retrieves documents by
+meaning (not just keyword matching).
+
+### Search Documents
+
+```bash
+curl -G "http://localhost:8000/api/documents/search" \
+  --data-urlencode "query=annual sales figures Q4"
+```
+
+**Response** (example):
+```json
+[
+  {
+    "id": "...",
+    "organization_id": "...",
+    "user_id": "...",
+    "filename": "q4-report.pdf",
+    "s3_key": "org-id/q4-report.pdf",
+    "file_type": "application/pdf",
+    "file_size": 204800,
+    "status": "processed",
+    "created_at": "2026-01-15T10:30:00Z",
+    "updated_at": "2026-01-15T11:00:00Z",
+    "relevance": 0.95
+  }
+]
+```
+
+The search pipeline:
+1. Embeds the query using OpenAI ``text-embedding-3-small``.
+2. Retrieves the top-5 most similar chunks from the vector store.
+3. Re-ranks results using Cohere's ``rerank-english-v3.0`` cross-encoder.
+4. Deduplicates by document and returns results sorted by descending relevance.
+
 ## Testing Presigned URLs
 
 The API provides endpoints to generate presigned URLs for uploading documents to S3-compatible storage (Cloudflare R2).
