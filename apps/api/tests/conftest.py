@@ -114,11 +114,18 @@ def _mock_env_vars() -> Generator[None, None, None]:
     """Set required environment variables for every test.
 
     Without ``BUCKET_NAME`` the document routes raise 500 immediately.
+    ``OPENAI_API_KEY`` and ``COHERE_API_KEY`` are needed because
+    ``document_search`` lazily initialises API clients on first use.
     """
     import os
     from unittest.mock import patch
 
-    with patch.dict("os.environ", {"BUCKET_NAME": "test-bucket"}):
+    env_vars = {
+        "BUCKET_NAME": "test-bucket",
+        "OPENAI_API_KEY": "sk-test-openai-key",
+        "COHERE_API_KEY": "test-cohere-key",
+    }
+    with patch.dict("os.environ", env_vars):
         yield
 
 

@@ -25,6 +25,8 @@ dependencies = [
     "database",
     "logutil",
     "modal>=1.4.3",
+    "cohere>=7.0.8",
+    "openai>=2.24.0",
 ]
 requires-python = ">=3.11"
 

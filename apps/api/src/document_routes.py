@@ -3,6 +3,7 @@
 Endpoints prefixed with ``/api`` and tagged ``documents``:
 
 - ``GET /api/documents`` — List all documents.
+- ``GET /api/documents/search?query=...`` — Semantic search over document content.
 - ``GET /api/documents/upload-url/{file_path:path}`` — Generate a presigned S3/R2 URL for uploading.
 - ``POST /api/documents/{job_id}/process`` — Trigger document processing via Celery.
 - ``DELETE /api/documents/{document_id}`` — Delete a document and its artifacts.
@@ -14,6 +15,7 @@ All endpoints depend on a SQLModel database session injected via FastAPI's
 """
 
 import os
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -30,6 +32,10 @@ from s3.client import R2Client
 from s3.exceptions import S3Error
 
 from .celery_client import celery
+
+from pydantic import BaseModel
+
+from .document_search import query_documents
 
 from logutil import get_logger
 
@@ -451,6 +457,122 @@ def get_processing_jobs(db: Session = Depends(get_db)) -> list[ProcessingJob]:
     jobs = db.exec(select(ProcessingJob)).all()
     logger.info("Retrieved %d processing jobs", len(jobs))
     return jobs
+
+
+class DocumentSearchResult(BaseModel):
+    """A single document returned by the semantic search endpoint.
+
+    Includes only the fields that are useful for displaying search results
+    together with the relevance score assigned by the Cohere re-ranker.
+
+    The ``relevance`` field is a float in ``[0, 1]`` produced by the
+    Cohere cross-encoder (``rerank-english-v3.0``).  It represents the
+    semantic similarity between the query and the chunk text after
+    re-ranking.
+    """
+
+    id: UUID
+    organization_id: UUID
+    user_id: UUID
+    filename: str
+    s3_key: str | None
+    file_type: str
+    file_size: int | None
+    status: DocumentStatus
+    created_at: datetime | None
+    updated_at: datetime | None
+    relevance: float
+
+
+@router.get("/documents/search", response_model=list[DocumentSearchResult])
+def search_documents(
+    query: str = Query(..., min_length=1, max_length=500),
+) -> list[DocumentSearchResult]:
+    """Semantic search over document content.
+
+    Accepts a natural-language query, embeds it with OpenAI
+    ``text-embedding-3-small``, retrieves the most similar chunks from
+    the vector store (with adjacent neighbour context), re-ranks them
+    using Cohere's cross-encoder, and returns unique documents ordered
+    by descending relevance.
+
+    .. note::
+
+       **Authentication / scoping** — This endpoint currently returns
+       results across **all** documents in the system.  A future
+       iteration should inject a ``current_user`` dependency to scope
+       results to the calling user's organisation.
+
+    .. todo::
+
+       - Add pagination (``limit`` / ``offset``) to prevent unbounded
+         response sizes.
+       - Add a database session dependency if the search layer needs to
+         access document metadata beyond what the vector store provides.
+
+    Args:
+        query: The search query (1-500 characters).
+
+    Returns:
+        A list of unique ``DocumentSearchResult`` items, sorted by
+        descending relevance. Each item contains the document metadata
+        and a ``relevance`` score in ``[0, 1]`` from the Cohere
+        cross-encoder re-ranker.
+
+    Raises:
+        HTTPException 422: If ``query`` is empty or too long (handled
+            by FastAPI's built-in validation).
+        HTTPException 503: If the search backend (OpenAI embeddings,
+            vector store, or Cohere re-ranker) is unreachable or returns
+            an error.
+    """
+    logger.info("Search endpoint called: query_len=%d", len(query))
+
+    # ------------------------------------------------------------------
+    # NOTE: query_documents() returns a list[QueryDocumentResult] where
+    # each dict has:
+    #   "document"  — a SQLModel Document ORM instance
+    #   "relevance" — a float from the Cohere re-ranker (typically in
+    #                  [0, 1], but we clamp to be safe)
+    # ------------------------------------------------------------------
+    try:
+        results = query_documents(query)
+        logger.info(
+            "Search completed: query_len=%d, results=%d",
+            len(query),
+            len(results),
+        )
+    except Exception:
+        logger.exception("Search failed for query_len=%d", len(query))
+        raise HTTPException(
+            status_code=503,
+            detail="Search service is currently unavailable. Please try again later.",
+        )
+
+    # Clamp relevance to [0, 1] to guard against edge-case scores from
+    # the Cohere API that may fall slightly outside this range.
+    clamped_results = []
+    for result in results:
+        relevance = result.get("relevance", 0.0)
+        clamped_relevance = max(0.0, min(1.0, relevance))
+
+        clamped_results.append(
+            DocumentSearchResult(
+                id=result["document"].id,
+                organization_id=result["document"].organization_id,
+                user_id=result["document"].user_id,
+                filename=result["document"].filename,
+                s3_key=result["document"].s3_key,
+                file_type=result["document"].file_type,
+                file_size=result["document"].file_size,
+                status=result["document"].status,
+                created_at=result["document"].created_at,
+                updated_at=result["document"].updated_at,
+                relevance=clamped_relevance,
+            )
+        )
+
+    return clamped_results
 
 
 @router.get("/processing-jobs/{job_id}", response_model=ProcessingJob)

@@ -13,9 +13,34 @@ from database.session import get_db
 
 logger = get_logger(__name__)
 
-client = openai.Client()
-cohere_client = cohere.Client(os.environ["COHERE_API_KEY"])
+# ── Lazy client initialisation ───────────────────────────────────────
+# The OpenAI and Cohere clients are created on first use rather than at
+# import time so that:
+# 1. The module can be imported without ``OPENAI_API_KEY`` or
+#    ``COHERE_API_KEY`` set (e.g. during documentation generation or
+#    when only certain routes are loaded).
+# 2. Unit tests can set environment variables or patch the clients
+#    before they are ever instantiated.
+
+_client: openai.Client | None = None
+_cohere_client: cohere.Client | None = None
 RERANK_MODEL = "rerank-english-v3.0"
+
+
+def _get_openai_client() -> openai.Client:
+    """Return the singleton OpenAI client, creating it if necessary."""
+    global _client
+    if _client is None:
+        _client = openai.Client()
+    return _client
+
+
+def _get_cohere_client() -> cohere.Client:
+    """Return the singleton Cohere client, creating it if necessary."""
+    global _cohere_client
+    if _cohere_client is None:
+        _cohere_client = cohere.Client(os.environ["COHERE_API_KEY"])
+    return _cohere_client
 
 
 class QueryDocumentResult(TypedDict):
@@ -50,7 +75,10 @@ def _embed_query(query: str) -> list[float]:
         1536-dimensional embedding vector.
     """
     logger.info("Embedding query: query_len=%d", len(query))
-    response = client.embeddings.create(input=query, model="text-embedding-3-small")
+    openai_client = _get_openai_client()
+    response = openai_client.embeddings.create(
+        input=query, model="text-embedding-3-small"
+    )
 
     embedding = response.data[0].embedding
     logger.debug(
@@ -83,7 +111,8 @@ def rerank_docs(query: str, chunks: Sequence[ParentChunk]) -> list[RerankResult]
     """
     logger.info("Re-ranking %d chunks for query: query_len=%d", len(chunks), len(query))
 
-    rerank_response = cohere_client.rerank(
+    cohere_api_client = _get_cohere_client()
+    rerank_response = cohere_api_client.rerank(
         model=RERANK_MODEL,
         query=query,
         documents=[chunk["chunk_content"] for chunk in chunks],
