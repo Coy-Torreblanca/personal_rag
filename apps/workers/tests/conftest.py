@@ -1,5 +1,6 @@
 """Shared fixtures and configuration for worker tests."""
 
+import os
 from collections.abc import Generator
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +16,16 @@ import pytest
 # exercise ``generate_embeddings``.
 _openai_client_patcher = patch("openai.Client", autospec=True)
 _openai_client_patcher.start()
+
+
+# ── Early mock for cohere.Client ─────────────────────────────────
+# ``src.retrieval`` calls ``cohere.Client(os.environ["COHERE_API_KEY"])``
+# at module level, which requires the env var and real credentials.
+# We set a dummy env var and patch ``cohere.Client`` so that the module
+# can be imported during test collection.
+os.environ.setdefault("COHERE_API_KEY", "test-cohere-key")
+_cohere_client_patcher = patch("cohere.Client", autospec=True)
+_cohere_client_patcher.start()
 
 
 # ── Sample test data ──────────────────────────────────────────────
