@@ -386,8 +386,8 @@ def delete_document(document_id: UUID, db: Session = Depends(get_db)) -> dict:
                     "Deleted S3 file %s for document %s", document.s3_key, document_id
                 )
 
+                processed_document = f"{document.s3_key}.md"
                 try:
-                    processed_document = f"{document.s3_key}.md"
                     client.delete_file(key=processed_document)
                     logger.debug(
                         "Deleted processed S3 file %s for document %s",
