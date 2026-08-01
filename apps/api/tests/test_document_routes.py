@@ -94,7 +94,7 @@ class TestGetUploadUrl:
     """``GET /api/documents/upload-url/{file_path}`` — presigned URL generation."""
 
     async def test_returns_presigned_url(
-        self, async_client: AsyncClient, db_session: MagicMock
+        self, async_client: AsyncClient, db_session: MagicMock, r2_client: MagicMock
     ) -> None:
         """Happy path — returns a presigned URL payload with a job_id."""
         org_id = uuid4()
@@ -114,6 +114,16 @@ class TestGetUploadUrl:
         assert data["url"] == "https://test-bucket.r2.dev/test-key"
         assert data["method"] == "PUT"
         assert "job_id" in data
+
+        # The presigned URL must be signed for the org-prefixed key with the
+        # client's content type (required for the CORS preflight to match).
+        r2_client.generate_presigned_url.assert_called_once_with(
+            key=f"{org_id}/my-doc.pdf",
+            expiration=3600,
+            method="PUT",
+            inline=False,
+            content_type="application/pdf",
+        )
 
     async def test_missing_bucket_name_returns_500(
         self, async_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
@@ -202,6 +212,80 @@ class TestGetUploadUrl:
         )
         assert resp.status_code == 200
         assert resp.json()["success"] is True
+
+    async def test_presign_failure_returns_500_and_creates_no_records(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """If presigning fails, return 500 without creating any records."""
+        org_id = uuid4()
+        user_id = uuid4()
+
+        r2_client.generate_presigned_url.side_effect = S3Error("Network error")
+
+        resp = await async_client.get(
+            "/api/documents/upload-url/my-doc.pdf",
+            params={
+                "organization_id": str(org_id),
+                "user_id": str(user_id),
+                "content_type": "application/pdf",
+            },
+        )
+        assert resp.status_code == 500
+        assert "Failed to generate upload URL" in resp.json()["detail"]
+
+        # Records are only persisted after the presigned URL succeeds, so a
+        # failure must not create (or delete) anything — the key stays
+        # unlocked and free of orphaned jobs.
+        assert db_session.add.call_args_list == []
+        assert db_session.commit.call_args_list == []
+        assert db_session.delete.call_args_list == []
+
+    async def test_presign_happens_before_persist(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """The presigned URL is generated before any DB records are created.
+
+        Guards the ordering invariant that prevents orphaned
+        Document/ProcessingJob pairs when presigning fails.
+        """
+        org_id = uuid4()
+        user_id = uuid4()
+
+        events: list[str] = []
+        real_side_effect = r2_client.generate_presigned_url.side_effect
+
+        def _recording_presign(**kwargs):
+            """Record the presign event, then delegate to the default mock."""
+            events.append("presign")
+            return real_side_effect(**kwargs)
+
+        def _recording_add(*args, **kwargs):
+            """Record the db.add event."""
+            events.append("add")
+
+        r2_client.generate_presigned_url.side_effect = _recording_presign
+        db_session.add.side_effect = _recording_add
+
+        resp = await async_client.get(
+            "/api/documents/upload-url/my-doc.pdf",
+            params={
+                "organization_id": str(org_id),
+                "user_id": str(user_id),
+                "content_type": "application/pdf",
+            },
+        )
+        assert resp.status_code == 200
+
+        # The very first recorded event must be the presign call; DB writes
+        # (two ``add`` calls: Document + ProcessingJob) only happen after.
+        assert events[0] == "presign"
+        assert events[1:] == ["add", "add"]
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +401,202 @@ class TestProcessDocument:
         resp = await async_client.post(f"/api/documents/{job_id}/process")
         assert resp.status_code == 400
         assert "not been uploaded" in resp.json()["detail"].lower()
+
+    async def test_presign_failure_returns_500_and_keeps_job_pending(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """If presigning fails, return 500 without mutating job state."""
+        job_id = uuid4()
+        doc = make_document(status=DocumentStatus.UPLOADED, s3_key="some/key.pdf")
+        job = make_processing_job(
+            id=job_id, document_id=doc.id, status=ProcessingJobStatus.PENDING
+        )
+
+        db_session.get.side_effect = self._make_get_side_effect(job_id, job, doc)
+
+        r2_client.generate_presigned_url.side_effect = S3Error("Network error")
+
+        resp = await async_client.post(f"/api/documents/{job_id}/process")
+        assert resp.status_code == 500
+        assert "Failed to prepare document processing" in resp.json()["detail"]
+
+        # Statuses must not have been transitioned.
+        assert job.status == ProcessingJobStatus.PENDING
+        assert doc.status == DocumentStatus.UPLOADED
+
+    async def test_presign_uses_download_and_upload_keys(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """Presigned URLs are generated for the source (GET) and .md output (PUT)."""
+        job_id = uuid4()
+        doc = make_document(status=DocumentStatus.UPLOADED, s3_key="some/key.pdf")
+        job = make_processing_job(
+            id=job_id, document_id=doc.id, status=ProcessingJobStatus.PENDING
+        )
+
+        db_session.get.side_effect = self._make_get_side_effect(job_id, job, doc)
+
+        resp = await async_client.post(f"/api/documents/{job_id}/process")
+        assert resp.status_code == 200
+
+        # The source file existence check runs first.
+        r2_client.file_exists.assert_called_once_with(key="some/key.pdf")
+
+        # Two presigned URLs: a GET for the original and a PUT for the
+        # processed Markdown output.
+        assert r2_client.generate_presigned_url.call_count == 2
+        r2_client.generate_presigned_url.assert_any_call(
+            key="some/key.pdf",
+            expiration=3600,
+            method="GET",
+            inline=False,
+        )
+        r2_client.generate_presigned_url.assert_any_call(
+            key="some/key.pdf.md",
+            expiration=3600,
+            method="PUT",
+            inline=False,
+        )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/documents/{document_id}/download
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadDocument:
+    """``GET /api/documents/{document_id}/download`` — presigned GET URL."""
+
+    async def test_returns_presigned_download_url(
+        self, async_client: AsyncClient, db_session: MagicMock
+    ) -> None:
+        """Happy path — returns a presigned GET URL and the original filename."""
+        doc_id = uuid4()
+        doc = make_document(
+            id=doc_id,
+            filename="report.pdf",
+            s3_key="org-id/report.pdf",
+        )
+        db_session.get.return_value = doc
+
+        resp = await async_client.get(f"/api/documents/{doc_id}/download")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+        assert data["url"] == "https://test-bucket.r2.dev/test-key"
+        assert data["filename"] == "report.pdf"
+        assert data["method"] == "GET"
+        assert data["expires_in"] == 3600
+        assert data["key"] == "test-key"
+        assert "GET" in data["message"]
+
+    async def test_returns_404_for_missing_document(
+        self, async_client: AsyncClient, db_session: MagicMock
+    ) -> None:
+        """If the document does not exist, return 404."""
+        db_session.get.return_value = None
+        resp = await async_client.get(f"/api/documents/{uuid4()}/download")
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Document not found"
+
+    async def test_returns_404_when_file_missing_in_r2(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """If the object was never uploaded, return 404 instead of signing a dead URL."""
+        doc_id = uuid4()
+        doc = make_document(id=doc_id, s3_key="org-id/report.pdf")
+        db_session.get.return_value = doc
+
+        r2_client.file_exists.return_value = False
+
+        resp = await async_client.get(f"/api/documents/{doc_id}/download")
+        assert resp.status_code == 404
+        assert "not been uploaded" in resp.json()["detail"].lower()
+
+        # No URL may be signed for an object that does not exist.
+        r2_client.generate_presigned_url.assert_not_called()
+
+    async def test_presign_uses_document_key(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """The presigned URL is signed for the document's own S3 key with GET."""
+        doc_id = uuid4()
+        doc = make_document(id=doc_id, s3_key="org-id/report.pdf")
+        db_session.get.return_value = doc
+
+        resp = await async_client.get(f"/api/documents/{doc_id}/download")
+        assert resp.status_code == 200
+
+        # Existence is verified first, then the URL is signed for the same key.
+        r2_client.file_exists.assert_called_once_with(key="org-id/report.pdf")
+        r2_client.generate_presigned_url.assert_called_once_with(
+            key="org-id/report.pdf",
+            expiration=3600,
+            method="GET",
+            inline=False,
+        )
+
+    async def test_invalid_document_id_returns_422(
+        self, async_client: AsyncClient
+    ) -> None:
+        """A non-UUID path segment must be rejected by FastAPI validation."""
+        resp = await async_client.get("/api/documents/not-a-uuid/download")
+        assert resp.status_code == 422
+
+    async def test_missing_s3_key_returns_500(
+        self, async_client: AsyncClient, db_session: MagicMock
+    ) -> None:
+        """If the document has no ``s3_key``, return 500."""
+        doc_id = uuid4()
+        doc = make_document(id=doc_id, s3_key=None)  # type: ignore[arg-type]
+        db_session.get.return_value = doc
+
+        resp = await async_client.get(f"/api/documents/{doc_id}/download")
+        assert resp.status_code == 500
+        assert "s3 key" in resp.json()["detail"].lower()
+
+    async def test_missing_bucket_name_returns_500(
+        self, async_client: AsyncClient, db_session: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If ``BUCKET_NAME`` is unset, return 500."""
+        monkeypatch.delenv("BUCKET_NAME", raising=False)
+
+        doc_id = uuid4()
+        doc = make_document(id=doc_id, s3_key="org-id/report.pdf")
+        db_session.get.return_value = doc
+
+        resp = await async_client.get(f"/api/documents/{doc_id}/download")
+        assert resp.status_code == 500
+        assert "No bucket name configured" in resp.json()["detail"]
+
+    async def test_presign_failure_returns_500(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """If presigning fails, return a meaningful 500 instead of a bare traceback."""
+        doc_id = uuid4()
+        doc = make_document(id=doc_id, s3_key="org-id/report.pdf")
+        db_session.get.return_value = doc
+
+        r2_client.generate_presigned_url.side_effect = S3Error("Network error")
+
+        resp = await async_client.get(f"/api/documents/{doc_id}/download")
+        assert resp.status_code == 500
+        assert "Failed to generate download URL" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

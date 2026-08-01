@@ -165,15 +165,19 @@ def mock_r2_instance() -> Generator[MagicMock, None, None]:
     """
     mock_instance = MagicMock()
 
-    presigned_response = MagicMock()
-    presigned_response.url = "https://test-bucket.r2.dev/test-key"
-    presigned_response.bucket = "test-bucket"
-    presigned_response.key = "test-key"
-    presigned_response.method = "PUT"
-    presigned_response.expires_in = 3600
-    presigned_response.message = "Presigned URL generated for PUT operation"
+    def _presigned_response(**kwargs):
+        """Build a presigned response that mirrors the requested method."""
+        method = str(kwargs.get("method", "GET")).upper()
+        response = MagicMock()
+        response.url = "https://test-bucket.r2.dev/test-key"
+        response.bucket = "test-bucket"
+        response.key = "test-key"
+        response.method = method
+        response.expires_in = kwargs.get("expiration", 3600)
+        response.message = f"Presigned URL generated for {method} operation"
+        return response
 
-    mock_instance.generate_presigned_url.return_value = presigned_response
+    mock_instance.generate_presigned_url.side_effect = _presigned_response
     mock_instance.delete_file.return_value = MagicMock(success=True)
     mock_instance.file_exists.return_value = True
 

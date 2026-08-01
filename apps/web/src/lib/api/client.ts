@@ -15,6 +15,7 @@ import type {
   DocumentSearchResult,
   ProcessingJob,
   UploadUrlResponse,
+  DownloadDocumentResponse,
   ProcessDocumentResponse,
   DeleteDocumentResponse,
   HealthCheckResponse,
@@ -253,6 +254,21 @@ export const api = {
     opts?: RequestOptions,
   ): Promise<DeleteDocumentResponse | undefined> {
     return del(`/api/documents/${encodeURIComponent(documentId)}`, opts);
+  },
+
+  /**
+   * GET /api/documents/{documentId}/download
+   * Get a time-limited presigned URL for downloading a document's
+   * original file directly from object storage.
+   */
+  downloadDocument(
+    documentId: string,
+    opts?: RequestOptions,
+  ): Promise<DownloadDocumentResponse | undefined> {
+    return get(
+      `/api/documents/${encodeURIComponent(documentId)}/download`,
+      opts,
+    );
   },
 
   // -----------------------------------------------------------------------

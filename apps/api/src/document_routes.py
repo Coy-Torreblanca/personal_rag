@@ -6,6 +6,7 @@ Endpoints prefixed with ``/api`` and tagged ``documents``:
 - ``GET /api/documents/search?query=...`` — Semantic search over document content.
 - ``GET /api/documents/upload-url/{file_path:path}`` — Generate a presigned S3/R2 URL for uploading.
 - ``POST /api/documents/{job_id}/process`` — Trigger document processing via Celery.
+- ``GET /api/documents/{document_id}/download`` — Generate a presigned GET URL for downloading a document.
 - ``DELETE /api/documents/{document_id}`` — Delete a document and its artifacts.
 - ``GET /api/processing-jobs`` — List all processing jobs.
 - ``GET /api/processing-jobs/{job_id}`` — Fetch a single processing job.
@@ -20,6 +21,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select, func
+from botocore.exceptions import ClientError
 
 from database.models import (
     Document,
@@ -142,8 +144,33 @@ async def get_upload_s3_url(
 
     logger.debug("No active jobs for key %s — proceeding with upload", key)
 
-    client = R2Client(bucket_name=bucket_name)
     expiration = 3600  # TODO: Make expiration configurable per request.
+
+    # Generate the presigned URL BEFORE persisting anything. If presigning
+    # fails we return a 500 with no side effects: the key is not left locked
+    # by an orphaned Document/ProcessingJob pair, and the client can simply
+    # retry. Only ``S3Error`` (and its subclasses) is converted to a 500;
+    # anything else propagates so real bugs surface in the logs.
+    try:
+        client = R2Client(bucket_name=bucket_name)
+        response = client.generate_presigned_url(
+            key=key,
+            expiration=expiration,
+            method="PUT",
+            inline=False,
+            content_type=content_type,
+        )
+    except S3Error as e:
+        logger.exception("Failed to generate presigned upload URL for key %s", key)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to generate upload URL. Please try again.",
+        ) from e
+
+    logger.info(
+        "Generated presigned upload URL for document with key %s",
+        key,
+    )
 
     # Persist a Document record so the client can track upload progress.
     doc = Document(
@@ -172,21 +199,6 @@ async def get_upload_s3_url(
     job_id = job.id
 
     logger.debug("Created processing job %s for document %s", job_id, doc.id)
-
-    # Generate the presigned URL.
-    response = client.generate_presigned_url(
-        key=key,
-        expiration=expiration,
-        method="PUT",
-        inline=False,
-        content_type=content_type,
-    )
-
-    logger.info(
-        "Generated presigned upload URL for document %s (job %s)",
-        doc.id,
-        job_id,
-    )
 
     return {
         "success": True,
@@ -269,37 +281,53 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)) -> dict:
     if not bucket_name:
         raise HTTPException(status_code=500, detail="No bucket name configured")
 
-    client = R2Client(bucket_name=bucket_name)
+    try:
+        client = R2Client(bucket_name=bucket_name)
 
-    # Validate that the file actually exists in R2 before proceeding.
-    if not client.file_exists(key=document.s3_key):
-        logger.warning(
-            "Document %s key %s not found in R2", document.id, document.s3_key
+        # Validate that the file actually exists in R2 before proceeding.
+        # NOTE: this HTTPException(400) is intentionally NOT an ``S3Error``,
+        # so it passes straight through the ``except S3Error`` below — a
+        # missing file is a client error, not an infrastructure failure.
+        if not client.file_exists(key=document.s3_key):
+            logger.warning(
+                "Document %s key %s not found in R2", document.id, document.s3_key
+            )
+            raise HTTPException(
+                status_code=400,
+                detail="The document file has not been uploaded yet. Please upload the file before processing.",
+            )
+
+        expiration = 3600  # TODO: Make expiration configurable.
+
+        # Presigned URL for downloading the original document.
+        download_response = client.generate_presigned_url(
+            key=document.s3_key,
+            expiration=expiration,
+            method="GET",
+            inline=False,
         )
+        download_url = download_response.url
+
+        # Presigned URL for uploading the processed Markdown output.
+        upload_response = client.generate_presigned_url(
+            key=document.s3_key + ".md",
+            expiration=expiration,
+            method="PUT",
+            inline=False,
+        )
+        upload_url = upload_response.url
+    # Any S3/R2 infrastructure failure (config, connectivity, signing) is
+    # mapped to a clean 500 BEFORE any status transitions happen, so a
+    # transient error cannot leave the job half-transitioned. Note: the
+    # s3 package's ``file_exists`` can re-raise a raw botocore ``ClientError``
+    # for non-404 failures; that would escape this handler and surface as a
+    # generic 500 — acceptable, since it is logged upstream.
+    except (S3Error, ClientError) as e:
+        logger.exception("Failed to prepare S3 URLs for document %s", document.id)
         raise HTTPException(
-            status_code=400,
-            detail="The document file has not been uploaded yet. Please upload the file before processing.",
-        )
-
-    expiration = 3600  # TODO: Make expiration configurable.
-
-    # Presigned URL for downloading the original document.
-    download_response = client.generate_presigned_url(
-        key=document.s3_key,
-        expiration=expiration,
-        method="GET",
-        inline=False,
-    )
-    download_url = download_response.url
-
-    # Presigned URL for uploading the processed Markdown output.
-    upload_response = client.generate_presigned_url(
-        key=document.s3_key + ".md",
-        expiration=expiration,
-        method="PUT",
-        inline=False,
-    )
-    upload_url = upload_response.url
+            status_code=500,
+            detail="Failed to prepare document processing. Please try again.",
+        ) from e
 
     # Transition statuses.
     document.status = DocumentStatus.PROCESSING
@@ -346,6 +374,111 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)) -> dict:
         "document_id": str(document_id),
         "task_id": result.id,
         "status": "processing",
+    }
+
+
+@router.get("/documents/{document_id}/download")
+def download_document(document_id: UUID, db: Session = Depends(get_db)) -> dict:
+    """Generate a presigned URL for downloading a document.
+
+    Looks up the document, verifies the object exists in object storage,
+    then produces a time-limited presigned GET URL the client can use to
+    download the original file directly from R2.
+
+    .. note::
+
+       **Authentication / scoping** — This endpoint currently returns a
+       presigned URL for **any** document id without checking that the
+       caller belongs to the document's organisation. A future iteration
+       should inject a ``current_user`` dependency and verify
+       ``document.organization_id`` matches the caller.
+
+    Args:
+        document_id: UUID of the document to download.
+        db: Injected database session.
+
+    Returns:
+        dict containing:
+            - ``success``: Always ``True`` on success.
+            - ``url``: Presigned URL for a GET request.
+            - ``filename``: Original filename for the client's download.
+            - ``key``: Full object key.
+            - ``method``: HTTP method (``GET``).
+            - ``expires_in``: URL validity duration in seconds.
+            - ``message``: Human-readable success message.
+
+    Raises:
+        HTTPException 404: If the document does not exist, or if the
+            underlying object has not been uploaded to R2 yet.
+        HTTPException 500: If ``BUCKET_NAME`` is unconfigured, the
+            document has no S3 key, or presigning fails.
+    """
+    logger.info("Generating download URL for document %s", document_id)
+    document = db.get(Document, document_id)
+    if not document:
+        logger.warning("Document not found for download: %s", document_id)
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if not document.s3_key:
+        logger.error("Document %s has no S3 key", document_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not find s3 key for document: {document_id}",
+        )
+
+    bucket_name = os.environ.get("BUCKET_NAME")
+    if not bucket_name:
+        logger.error("No BUCKET_NAME environment variable configured")
+        raise HTTPException(status_code=500, detail="No bucket name configured")
+
+    expiration = 3600  # TODO: Make expiration configurable.
+
+    try:
+        client = R2Client(bucket_name=bucket_name)
+
+        # Refuse to sign a URL for an object that was never uploaded.
+        # Signing would "succeed" and hand the client a URL that 404s on
+        # first use — an explicit error here is far clearer. As in
+        # ``process_document``, the HTTPException raised below passes
+        # straight through ``except S3Error``.
+        if not client.file_exists(key=document.s3_key):
+            logger.warning(
+                "Document %s key %s not found in R2 — refusing to sign download URL",
+                document_id,
+                document.s3_key,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail="The document file has not been uploaded yet.",
+            )
+
+        response = client.generate_presigned_url(
+            key=document.s3_key,
+            expiration=expiration,
+            method="GET",
+            inline=False,
+        )
+    except S3Error as e:
+        logger.exception("Failed to generate download URL for document %s", document_id)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to generate download URL. Please try again.",
+        ) from e
+
+    logger.info(
+        "Generated download URL for document %s (expires in %ds)",
+        document_id,
+        expiration,
+    )
+
+    return {
+        "success": True,
+        "url": response.url,
+        "filename": document.filename,
+        "key": response.key,
+        "method": response.method,
+        "expires_in": response.expires_in,
+        "message": response.message,
     }
 
 

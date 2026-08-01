@@ -99,6 +99,17 @@ export interface UploadUrlResponse {
   job_id: string;
 }
 
+/** Response from `GET /api/documents/{document_id}/download`. */
+export interface DownloadDocumentResponse {
+  success: boolean;
+  url: string;
+  filename: string;
+  key: string;
+  method: string;
+  expires_in: number;
+  message: string;
+}
+
 /** Response from `POST /api/documents/{job_id}/process`. */
 export interface ProcessDocumentResponse {
   message: string;
