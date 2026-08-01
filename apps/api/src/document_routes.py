@@ -76,6 +76,13 @@ async def get_upload_s3_url(
     time-limited presigned URL that the client can use to upload the file
     directly to object storage.
 
+    Existing documents that reference the same S3 key are transitioned to
+    ``STALE`` once the new presigned URL has been generated, because the
+    upload overwrites the object they point at. ``ERROR`` documents are
+    left untouched so the failure stays visible for debugging. The
+    transition is committed atomically with the new ``Document`` record and
+    never happens if presigning fails.
+
     Args:
         file_path: The object key path (supports nested paths via ``/``).
         organization_id: UUID of the owning organisation.
@@ -110,9 +117,18 @@ async def get_upload_s3_url(
     # Build the object key with an organisation-level prefix for multi-tenancy.
     key = f"{organization_id}/{file_path}"
 
-    # Ensure there are no other jobs running for this key.
+    # ------------------------------------------------------------------
+    # Step 1 — Guard clause: refuse to overwrite a key that is still being
+    # processed. Documents that pass the guard are collected into
+    # ``stale_docs`` because their S3 object is about to be overwritten.
+    # ------------------------------------------------------------------
     statement = select(Document).where(Document.s3_key == key)
     existing_docs = db.exec(statement)
+
+    # Documents whose object is about to be overwritten by this upload.
+    # They are only mutated AFTER presigning succeeds (see step 2), so a
+    # failed presign leaves the database completely untouched.
+    stale_docs: list[Document] = []
 
     for doc in existing_docs:
         # Access the column directly so the SQL NOT IN clause works correctly.
@@ -141,6 +157,16 @@ async def get_upload_s3_url(
                 status_code=400,
                 detail=f"A document with this S3 key is already being processed: {key!r}",
             )
+
+        # The document's S3 object will be overwritten by this upload, so
+        # the record no longer describes the content at ``key``. Any
+        # non-ERROR document is a candidate for the STALE transition.
+        # ``ERROR`` documents are deliberately left untouched: the status
+        # is the only record of the failure and should remain visible for
+        # debugging. Already-stale documents are skipped to avoid pointless
+        # UPDATE statements.
+        if doc.status not in (DocumentStatus.ERROR, DocumentStatus.STALE):
+            stale_docs.append(doc)
 
     logger.debug("No active jobs for key %s — proceeding with upload", key)
 
@@ -171,6 +197,30 @@ async def get_upload_s3_url(
         "Generated presigned upload URL for document with key %s",
         key,
     )
+
+    # ------------------------------------------------------------------
+    # Step 2 — Mark superseded documents as STALE (only after presigning)
+    # ------------------------------------------------------------------
+    # The S3 object referenced by every document in ``stale_docs`` is about
+    # to be overwritten by this upload, so those records no longer describe
+    # the content at ``key``. Transition them to ``STALE`` so clients can
+    # distinguish superseded records from current ones.
+    #
+    # This is intentionally deferred until AFTER the presigned URL has been
+    # generated: the "presign before persist" invariant guarantees a failed
+    # presign leaves the database completely untouched (no orphaned jobs,
+    # no committed status transitions). The transition is committed
+    # atomically with the new ``Document`` record below — a single
+    # transaction, so a crash mid-request cannot leave a half-updated state.
+    for doc in stale_docs:
+        doc.status = DocumentStatus.STALE
+
+    if stale_docs:
+        logger.info(
+            "Marked %d superseded document(s) stale for key %s",
+            len(stale_docs),
+            key,
+        )
 
     # Persist a Document record so the client can track upload progress.
     doc = Document(

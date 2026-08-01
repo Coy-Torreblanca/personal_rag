@@ -212,6 +212,123 @@ class TestGetUploadUrl:
         )
         assert resp.status_code == 200
         assert resp.json()["success"] is True
+        # The superseded document must be marked STALE.
+        assert existing_doc.status == DocumentStatus.STALE
+
+    async def test_marks_existing_document_stale_on_reupload(
+        self, async_client: AsyncClient, db_session: MagicMock
+    ) -> None:
+        """A superseded doc (no active jobs) is marked STALE on re-upload."""
+        org_id = uuid4()
+        user_id = uuid4()
+        key = f"{org_id}/my-doc.pdf"
+
+        existing_doc = make_document(
+            organization_id=org_id,
+            s3_key=key,
+            status=DocumentStatus.PROCESSED,
+        )
+
+        # Make ``db.exec(select(Document).where(...))`` iterate over the
+        # existing document.
+        db_session.exec.return_value.__iter__.return_value = iter([existing_doc])
+
+        # No active jobs — only completed/failed ones.
+        db_session.scalar.return_value = 0
+
+        resp = await async_client.get(
+            "/api/documents/upload-url/my-doc.pdf",
+            params={
+                "organization_id": str(org_id),
+                "user_id": str(user_id),
+                "content_type": "application/pdf",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+
+        # The superseded document must be transitioned to STALE...
+        assert existing_doc.status == DocumentStatus.STALE
+
+        # ...and the transition is folded into the new Document's commit
+        # (doc + stale = commit 1, job = commit 2) — no extra transaction.
+        assert db_session.commit.call_count == 2
+
+    async def test_marks_all_superseded_documents_stale_keeps_error(
+        self, async_client: AsyncClient, db_session: MagicMock
+    ) -> None:
+        """ERROR docs keep their status; other docs sharing the key go STALE."""
+        org_id = uuid4()
+        user_id = uuid4()
+        key = f"{org_id}/my-doc.pdf"
+
+        error_doc = make_document(
+            organization_id=org_id, s3_key=key, status=DocumentStatus.ERROR
+        )
+        uploaded_doc = make_document(
+            organization_id=org_id, s3_key=key, status=DocumentStatus.UPLOADED
+        )
+        already_stale_doc = make_document(
+            organization_id=org_id, s3_key=key, status=DocumentStatus.STALE
+        )
+
+        db_session.exec.return_value.__iter__.return_value = iter(
+            [error_doc, uploaded_doc, already_stale_doc]
+        )
+        db_session.scalar.return_value = 0
+
+        resp = await async_client.get(
+            "/api/documents/upload-url/my-doc.pdf",
+            params={
+                "organization_id": str(org_id),
+                "user_id": str(user_id),
+                "content_type": "application/pdf",
+            },
+        )
+        assert resp.status_code == 200
+
+        # ERROR documents stay ERROR (the failure remains visible)...
+        assert error_doc.status == DocumentStatus.ERROR
+        # ...everything else pointing at the overwritten key becomes STALE.
+        assert uploaded_doc.status == DocumentStatus.STALE
+        assert already_stale_doc.status == DocumentStatus.STALE
+
+    async def test_presign_failure_does_not_mark_stale(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """A failed presign must not transition documents to STALE."""
+        org_id = uuid4()
+        user_id = uuid4()
+        key = f"{org_id}/my-doc.pdf"
+
+        existing_doc = make_document(
+            organization_id=org_id,
+            s3_key=key,
+            status=DocumentStatus.PROCESSED,
+        )
+        db_session.exec.return_value.__iter__.return_value = iter([existing_doc])
+        db_session.scalar.return_value = 0
+
+        r2_client.generate_presigned_url.side_effect = S3Error("Network error")
+
+        resp = await async_client.get(
+            "/api/documents/upload-url/my-doc.pdf",
+            params={
+                "organization_id": str(org_id),
+                "user_id": str(user_id),
+                "content_type": "application/pdf",
+            },
+        )
+        assert resp.status_code == 500
+
+        # The "presign before persist" invariant must hold even when stale
+        # candidates exist: no status transition, no writes at all.
+        assert existing_doc.status == DocumentStatus.PROCESSED
+        assert db_session.add.call_args_list == []
+        assert db_session.commit.call_args_list == []
 
     async def test_presign_failure_returns_500_and_creates_no_records(
         self,
