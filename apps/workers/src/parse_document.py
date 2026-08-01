@@ -93,7 +93,9 @@ class DoclingParser:
 
         try:
             result = self.converter.convert(download_url)
-            markdown_content = result.document.export_to_markdown()
+            markdown_content = result.document.export_to_markdown().raw_text.replace(
+                "\x00", ""
+            )
         except Exception as e:
             logger.exception("Docling conversion failed for %s", download_url)
             return {
