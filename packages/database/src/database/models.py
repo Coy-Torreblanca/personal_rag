@@ -27,6 +27,7 @@ class DocumentStatus(StrEnum):
     PROCESSING = "processing"
     PROCESSED = "processed"
     ERROR = "error"
+    STALE = "stale"
 
 
 class ProcessingJobStatus(StrEnum):
