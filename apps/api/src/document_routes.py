@@ -7,7 +7,8 @@ Endpoints prefixed with ``/api`` and tagged ``documents``:
 - ``GET /api/documents/upload-url/{file_path:path}`` — Generate a presigned S3/R2 URL for uploading.
 - ``POST /api/documents/{job_id}/process`` — Trigger document processing via Celery.
 - ``GET /api/documents/{document_id}/download`` — Generate a presigned GET URL for downloading a document.
-- ``DELETE /api/documents/{document_id}`` — Delete a document and its artifacts.
+- ``DELETE /api/documents/{document_id}`` — Delete a document and its artifacts
+  (processing jobs, indexed chunks, and the files in object storage).
 - ``GET /api/processing-jobs`` — List all processing jobs.
 - ``GET /api/processing-jobs/{job_id}`` — Fetch a single processing job.
 
@@ -19,27 +20,24 @@ import os
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlmodel import Session, select, func
 from botocore.exceptions import ClientError
-
 from database.models import (
     Document,
+    DocumentChunk,
     DocumentStatus,
     ProcessingJob,
     ProcessingJobStatus,
 )
 from database.session import get_db
+from fastapi import APIRouter, Depends, HTTPException, Query
+from logutil import get_logger
+from pydantic import BaseModel
 from s3.client import R2Client
 from s3.exceptions import S3Error
+from sqlmodel import Session, delete, func, select
 
 from .celery_client import celery
-
-from pydantic import BaseModel
-
 from .document_search import query_documents
-
-from logutil import get_logger
 
 logger = get_logger(__name__)
 
@@ -536,8 +534,10 @@ def download_document(document_id: UUID, db: Session = Depends(get_db)) -> dict:
 def delete_document(document_id: UUID, db: Session = Depends(get_db)) -> dict:
     """Delete a document and all associated artefacts.
 
-    Removes the document record, its processing jobs, and both the
-    original file and processed ``.md`` output from S3/R2 storage.
+    Removes the document record, its processing jobs, its indexed chunks,
+    and both the original file and processed ``.md`` output from S3/R2
+    storage. The database deletes run in a single transaction and are
+    committed atomically.
 
     Args:
         document_id: UUID of the document to delete.
@@ -596,14 +596,27 @@ def delete_document(document_id: UUID, db: Session = Depends(get_db)) -> dict:
                     status_code=500, detail="Error deleting the target file."
                 ) from e
 
-        # Cascade-delete all associated processing jobs.
-        jobs = db.exec(
-            select(ProcessingJob).where(ProcessingJob.document_id == document_id)
-        ).all()
-        for job in jobs:
-            db.delete(job)
+        # Cascade-delete all associated processing jobs and indexed chunks.
+        #
+        # Bulk ``DELETE`` statements are used instead of loading each row and
+        # calling ``db.delete()`` — one statement per table instead of N+1
+        # round trips. Order matters: child rows (jobs/chunks, which hold
+        # foreign keys to ``documents.id``) must be removed before the parent
+        # ``documents`` row is deleted by the ORM at flush time, or the FK
+        # constraints would fail. All statements run inside the request's
+        # transaction and are committed atomically below; any failure rolls
+        # the whole batch back in the ``except`` handler.
+        jobs_result = db.exec(
+            delete(ProcessingJob).where(ProcessingJob.document_id == document_id)
+        )
+        chunks_result = db.exec(
+            delete(DocumentChunk).where(DocumentChunk.document_id == document_id)
+        )
         logger.debug(
-            "Deleted %d processing jobs for document %s", len(jobs), document_id
+            "Deleted %d processing job(s) and %d chunk(s) for document %s",
+            jobs_result.rowcount,
+            chunks_result.rowcount,
+            document_id,
         )
 
         db.delete(document)
