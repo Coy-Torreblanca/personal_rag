@@ -34,9 +34,10 @@ full document-processing pipeline. It runs in four stages:
    - `generate_llm_summary()` sends the markdown to DeepSeek
      (`DEEPSEEK_API_KEY`, `deepseek-v4-flash`) and returns a dense
      150–250 word summary.
-   - `generate_embeddings()` chunks the markdown, appends the summary as an
-     extra top-level chunk, generates OpenAI embeddings for every input, and
-     persists the chunks to the database.
+   - `generate_embeddings()` chunks the markdown together with the LLM
+     summary (joined on its own line, so the summary stays inside the same
+     context windows as the content it describes), generates OpenAI
+     embeddings for every chunk, and persists the chunks to the database.
 4. **Persist status** — `mark_job_and_document_as_processed()`
    - Stores the LLM summary on the document row (`documents.summary`), marks
      the document as `PROCESSED` and the processing job as `COMPLETED`.

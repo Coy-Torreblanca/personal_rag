@@ -60,6 +60,11 @@ class TestChunkDocument:
         """An empty string produces no chunks."""
         assert chunk_document("") == []
 
+    def test_trailing_newline_without_summary_is_harmless(self) -> None:
+        """A dangling newline (e.g. an empty summary) produces no stray
+        chunks — the content chunk is returned unchanged."""
+        assert chunk_document("Hello, world!\n") == ["Hello, world!"]
+
     def test_content_preserved_across_chunks(self) -> None:
         """Re-joining chunks should contain all original words (order preserved)."""
         text = "word " * 1000
@@ -151,19 +156,23 @@ class TestGenerateEmbeddings:
         call_kwargs = mock_openai_client.embeddings.create.call_args[1]
         assert call_kwargs["model"] == "text-embedding-3-small"
         assert isinstance(call_kwargs["input"], list)
-        # At least one content chunk plus the summary chunk.
-        assert len(call_kwargs["input"]) >= 2
+        # The summary is folded into the chunking input, so its text must
+        # appear inside at least one of the generated chunks.
+        assert any(
+            self.SAMPLE_SUMMARY in chunk for chunk in call_kwargs["input"]
+        )
 
-    def test_appends_summary_as_final_input(
+    def test_summary_lands_in_final_chunk(
         self, mock_openai_client, _mock_gen_emb_db
     ) -> None:
-        """The LLM summary is the last embedding input."""
+        """The summary is the last text in the chunking input, so it lands
+        intact inside the final chunk (it is too short to be split)."""
         generate_embeddings(
             self.SAMPLE_TEXT, self.SAMPLE_ID, self.SAMPLE_ORG, self.SAMPLE_SUMMARY
         )
 
         call_kwargs = mock_openai_client.embeddings.create.call_args[1]
-        assert call_kwargs["input"][-1] == self.SAMPLE_SUMMARY
+        assert self.SAMPLE_SUMMARY in call_kwargs["input"][-1]
 
     def test_uploads_chunks_and_summary_to_db(
         self, mock_openai_client, _mock_gen_emb_db
@@ -178,21 +187,60 @@ class TestGenerateEmbeddings:
         assert mock_session.add.call_count >= 1
         mock_session.commit.assert_called_once()
 
-        # The final chunk persisted must be the summary, mirroring the
-        # input order (chunks, then summary).
-        last = mock_session.add.call_args_list[-1][0][0]
-        assert last.content == self.SAMPLE_SUMMARY
+        # The summary is folded into the chunking input, so its text must be
+        # present in at least one persisted chunk — the final one, since the
+        # summary is the last text in the chunking input and is too short to
+        # be split.
+        added = [call.args[0] for call in mock_session.add.call_args_list]
+        assert any(self.SAMPLE_SUMMARY in chunk.content for chunk in added)
+        assert self.SAMPLE_SUMMARY in added[-1].content
 
     def test_empty_document_embeds_only_summary(
         self, mock_openai_client, _mock_gen_emb_db
     ) -> None:
-        """An empty document still yields one input: the summary."""
+        """An empty document still yields one input: the chunked summary."""
         generate_embeddings(
             "", self.SAMPLE_ID, self.SAMPLE_ORG, self.SAMPLE_SUMMARY
         )
 
         call_kwargs = mock_openai_client.embeddings.create.call_args[1]
         assert call_kwargs["input"] == [self.SAMPLE_SUMMARY]
+
+    def test_short_document_merges_summary_into_single_chunk(
+        self, mock_openai_client, _mock_gen_emb_db
+    ) -> None:
+        """A short document + summary fit into one chunk, joined by a newline
+        — the summary is not a detached standalone embedding input."""
+        file_text = "Short document body."
+        generate_embeddings(
+            file_text, self.SAMPLE_ID, self.SAMPLE_ORG, self.SAMPLE_SUMMARY
+        )
+
+        call_kwargs = mock_openai_client.embeddings.create.call_args[1]
+        assert call_kwargs["input"] == [f"{file_text}\n{self.SAMPLE_SUMMARY}"]
+
+    def test_long_summary_split_across_chunks(
+        self, mock_openai_client, _mock_gen_emb_db
+    ) -> None:
+        """A summary longer than chunk_size is split across several
+        size-bounded chunks, and its trailing sentence is preserved
+        untruncated at the end of the final chunk."""
+        long_summary = (
+            "Sentence number %03d about the document contents and its key ideas. "
+            * 20  # ~1360 chars -> several 500-char chunks
+        )
+        generate_embeddings(
+            self.SAMPLE_TEXT, self.SAMPLE_ID, self.SAMPLE_ORG, long_summary
+        )
+
+        call_kwargs = mock_openai_client.embeddings.create.call_args[1]
+        inputs = call_kwargs["input"]
+        assert len(inputs) > 1
+        assert all(len(chunk) <= 500 for chunk in inputs)
+        # Chunking never truncates pieces: the final chunk must end with the
+        # summary's last sentence, which is the tail of the chunking input.
+        last_sentence = long_summary.strip().split(". ")[-1]
+        assert inputs[-1].strip().endswith(last_sentence)
 
     def test_embedding_count_mismatch_raises(
         self, mock_openai_client, _mock_gen_emb_db

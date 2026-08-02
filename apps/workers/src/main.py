@@ -367,8 +367,8 @@ def process_document(
         )
 
         # Stage 3 — generate a dense LLM summary. The summary is both
-        # persisted on the document row and embedded as an extra top-level
-        # chunk, so semantic search can match whole-document intent.
+        # persisted on the document row and folded into the embedding
+        # chunking input, so semantic search can match whole-document intent.
         summary = generate_llm_summary(document_content)
         logger.info(
             "Generated LLM summary for document %s (%d chars)",

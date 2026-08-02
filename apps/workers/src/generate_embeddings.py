@@ -66,19 +66,23 @@ def generate_embeddings(
     file_text: str, document_id: str, organization_id: str, document_summary: str
 ) -> None:
     """
-    Chunk document text, generate embeddings, and store them.
+    Chunk document text together with its LLM summary, generate embeddings,
+    and store them.
 
-    Splits ``file_text`` into overlapping chunks, appends the LLM-generated
-    ``document_summary`` as a final top-level chunk (so whole-document
-    semantics stay queryable), generates OpenAI embeddings for every input,
-    and persists the chunks to the database.
+    The ``document_summary`` is joined to ``file_text`` on its own line and
+    the combined text is split into overlapping chunks, so the summary is
+    embedded within the same context windows as the content it describes
+    (a short summary merges into the final chunk; a long one spans several
+    chunks). OpenAI embeddings are generated for every chunk, and the
+    chunks are persisted to the database.
 
     Args:
         file_text: The full markdown text of the processed document.
         document_id: UUID string of the document being processed.
         organization_id: UUID string of the owning organization.
-        document_summary: Non-empty LLM summary of the document; appended as
-            the final chunk so it is embedded and searchable like any other.
+        document_summary: Non-empty LLM summary of the document; joined to
+            ``file_text`` and chunked together with the content so it is
+            embedded and searchable like any other content.
 
     Raises:
         ValueError: If the embedding API returns a number of vectors that
@@ -87,18 +91,17 @@ def generate_embeddings(
     """
     logger.info("Generating embeddings for document %s", document_id)
 
-    file_chunks = chunk_document(file_text)
-    logger.debug("Split document %s into %d chunks", document_id, len(file_chunks))
-
-    # Embed the summary alongside the content chunks: it becomes an extra
-    # top-level vector that captures whole-document intent for semantic
-    # search. ``generate_llm_summary`` upstream guarantees a non-empty
-    # summary, so this is always a meaningful input.
-    file_chunks.append(document_summary)
+    # Fold the summary into the chunking input instead of embedding it as a
+    # detached top-level vector: joining it to the document text (on its own
+    # line) keeps the summary inside the same 500-char context windows as the
+    # surrounding content, so whole-document intent stays tied to the content
+    # it describes. ``generate_llm_summary`` upstream guarantees a non-empty
+    # summary, so this input is always meaningful.
+    file_chunks = chunk_document(file_text + "\n" + document_summary)
     logger.debug(
-        "Appended document summary as final embedding input for document %s "
-        "(total %d inputs)",
+        "Split document %s and its %d-char summary into %d chunks",
         document_id,
+        len(document_summary),
         len(file_chunks),
     )
 
