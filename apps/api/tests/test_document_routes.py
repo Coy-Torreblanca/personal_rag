@@ -5,20 +5,20 @@ without any external infrastructure.
 """
 
 import unittest
-from uuid import UUID, uuid4
 from unittest.mock import MagicMock
+from uuid import UUID, uuid4
 
 import pytest
-from httpx import AsyncClient
-
 from database.models import (
     Document,
+    DocumentChunk,
     DocumentStatus,
     ProcessingJob,
     ProcessingJobStatus,
 )
+from httpx import AsyncClient
 from s3.exceptions import S3Error
-
+from sqlalchemy import Delete
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -818,6 +818,90 @@ class TestDeleteDocument:
         resp = await async_client.delete(f"/api/documents/{doc_id}")
         assert resp.status_code == 500
         assert "Error deleting the target file" in resp.json()["detail"]
+
+    async def test_bulk_deletes_jobs_and_chunks_before_document(
+        self, async_client: AsyncClient, db_session: MagicMock
+    ) -> None:
+        """Child rows are removed with scoped bulk DELETEs, then the document.
+
+        Verifies the exact SQL that replaced the old load-and-delete loop:
+        one ``DELETE`` per child table filtered by ``document_id``, the
+        parent removed via the ORM, and a single commit for the whole batch.
+        """
+        doc_id = uuid4()
+        doc = make_document(id=doc_id, s3_key=None)  # skip the R2 path
+        db_session.get.return_value = doc
+
+        resp = await async_client.delete(f"/api/documents/{doc_id}")
+        assert resp.status_code == 200
+
+        # The delete route issues exactly two statements via ``exec``: the
+        # bulk deletes for jobs and chunks.
+        exec_calls = [call.args[0] for call in db_session.exec.call_args_list]
+        bulk_deletes = [stmt for stmt in exec_calls if isinstance(stmt, Delete)]
+        assert len(bulk_deletes) == 2
+
+        job_delete = next(
+            stmt
+            for stmt in bulk_deletes
+            if stmt.table.name == ProcessingJob.__tablename__
+        )
+        chunk_delete = next(
+            stmt
+            for stmt in bulk_deletes
+            if stmt.table.name == DocumentChunk.__tablename__
+        )
+        # Both statements must be scoped to the deleted document so we never
+        # touch another document's rows.
+        assert job_delete.whereclause.compare(ProcessingJob.document_id == doc_id)
+        assert chunk_delete.whereclause.compare(
+            DocumentChunk.document_id == doc_id
+        )
+
+        db_session.delete.assert_called_once_with(doc)
+        db_session.commit.assert_called_once()
+
+    async def test_delete_logs_affected_row_counts(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The debug log reports how many jobs/chunks were deleted."""
+        doc_id = uuid4()
+        doc = make_document(id=doc_id, s3_key=None)
+        db_session.get.return_value = doc
+
+        # Give each bulk delete its own affected-row count (the route reads
+        # ``CursorResult.rowcount`` off the exec result).
+        job_result = MagicMock(rowcount=2)
+        chunk_result = MagicMock(rowcount=17)
+        db_session.exec.side_effect = [job_result, chunk_result]
+
+        with caplog.at_level("DEBUG", logger="src.document_routes"):
+            resp = await async_client.delete(f"/api/documents/{doc_id}")
+
+        assert resp.status_code == 200
+        assert (
+            "Deleted 2 processing job(s) and 17 chunk(s) for document"
+            in caplog.text
+        )
+
+    async def test_db_failure_rolls_back_and_returns_500(
+        self, async_client: AsyncClient, db_session: MagicMock
+    ) -> None:
+        """If the commit fails, the whole batch rolls back and a 500 is returned."""
+        doc_id = uuid4()
+        doc = make_document(id=doc_id, s3_key=None)
+        db_session.get.return_value = doc
+        db_session.commit.side_effect = RuntimeError("DB connection lost")
+
+        resp = await async_client.delete(f"/api/documents/{doc_id}")
+
+        assert resp.status_code == 500
+        assert "Document deletion failed" in resp.json()["detail"]
+        # Jobs/chunks/document deletes must not be persisted half-way.
+        db_session.rollback.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

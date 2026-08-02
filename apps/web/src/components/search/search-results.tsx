@@ -12,8 +12,11 @@ import {
   Search,
   SearchX,
 } from "lucide-react";
-import type { DocumentSearchResult, DocumentStatus } from "@/lib/api/types";
+import { DocumentStatus } from "@/lib/api/types";
+import type { DocumentSearchResult } from "@/lib/api/types";
 import { Card, CardContent } from "@/components/ui/card";
+import { DownloadButton } from "@/components/search/download-button";
+import { DeleteButton } from "@/components/search/delete-button";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -158,7 +161,13 @@ function truncateFilename(name: string, max = 48): string {
 // Result Card
 // ---------------------------------------------------------------------------
 
-function ResultCard({ result }: { result: DocumentSearchResult }) {
+function ResultCard({
+  result,
+  onDocumentDeleted,
+}: {
+  result: DocumentSearchResult;
+  onDocumentDeleted?: (documentId: string) => void;
+}) {
   return (
     <Card className="group transition-all hover:shadow-md hover:border-ring/40">
       <CardContent className="flex items-start gap-4 p-4">
@@ -197,6 +206,21 @@ function ResultCard({ result }: { result: DocumentSearchResult }) {
             <span className="uppercase">{result.file_type}</span>
           </div>
         </div>
+
+        {/* Download + delete — download is disabled while the file is still
+            being uploaded to R2; deleting is always allowed. */}
+        <div className="flex flex-col items-end gap-1">
+          <DownloadButton
+            documentId={result.id}
+            filename={result.filename}
+            disabled={result.status === DocumentStatus.UPLOADING}
+          />
+          <DeleteButton
+            documentId={result.id}
+            filename={result.filename}
+            onDeleted={onDocumentDeleted}
+          />
+        </div>
       </CardContent>
     </Card>
   );
@@ -213,6 +237,8 @@ interface SearchResultsProps {
   isSearching: boolean;
   /** The query the current results (or empty state) belong to. */
   query: string;
+  /** Called with a document id after that document has been deleted. */
+  onDocumentDeleted?: (documentId: string) => void;
 }
 
 /**
@@ -225,6 +251,7 @@ export function SearchResults({
   results,
   isSearching,
   query,
+  onDocumentDeleted,
 }: SearchResultsProps) {
   // Initial state — no search performed yet
   if (!isSearching && results === null) {
@@ -281,7 +308,11 @@ export function SearchResults({
       </p>
       <div className="space-y-2">
         {results.map((result) => (
-          <ResultCard key={result.id + result.filename} result={result} />
+          <ResultCard
+            key={result.id + result.filename}
+            result={result}
+            onDocumentDeleted={onDocumentDeleted}
+          />
         ))}
       </div>
     </div>

@@ -5,6 +5,7 @@ import { api } from "@/lib/api/client";
 import type { DocumentSearchResult } from "@/lib/api/types";
 import { SearchBar } from "@/components/search/search-bar";
 import { SearchResults } from "@/components/search/search-results";
+import { UploadButton } from "@/components/upload/upload-button";
 
 /**
  * Shared search page body, rendered by both `/` and `/search`.
@@ -47,8 +48,22 @@ export function SearchView() {
     }
   }, []);
 
+  /**
+   * Remove a deleted document from the current results so its card
+   * disappears without a full re-search. Safe to call when results are
+   * null/empty (no-op).
+   */
+  const handleDocumentDeleted = useCallback((documentId: string) => {
+    setResults((prev) => prev?.filter((r) => r.id !== documentId) ?? null);
+  }, []);
+
   return (
     <div className="flex flex-1 flex-col items-center px-4 py-12 sm:py-24">
+      {/* Upload — top-right, above the header */}
+      <div className="mb-6 flex w-full max-w-2xl justify-end">
+        <UploadButton />
+      </div>
+
       {/* Header */}
       <div className="mb-8 text-center">
         <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
@@ -75,6 +90,7 @@ export function SearchView() {
           results={results}
           isSearching={isSearching}
           query={query}
+          onDocumentDeleted={handleDocumentDeleted}
         />
       </div>
     </div>
