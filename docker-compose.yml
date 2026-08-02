@@ -101,6 +101,8 @@ services:
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
       - NEXT_PUBLIC_ENVIRONMENT=development
+      - NEXT_PUBLIC_ORGANIZATION_ID=70885aed-0503-4656-bb72-368a26758575
+      - NEXT_PUBLIC_USER_ID=c06ed70c-b7bd-45a4-d0d7-0a978d44d956
     ports:
       - "3000:3000"
     volumes:

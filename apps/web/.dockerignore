@@ -1,0 +1,46 @@
+# Dependencies (installed inside the image)
+node_modules
+
+# Next.js build output
+.next
+out
+
+# Testing
+coverage
+*.tsbuildinfo
+
+# Environment files (secrets must not enter the image)
+.env
+.env.*
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Git / IDE / OS
+.git
+.gitignore
+.DS_Store
+.idea
+.vscode
+
+# Agent/docs files (not needed at runtime)
+# Also excluded because podman machine's virtiofs mount can fail with
+# "getting extended attributes ... cannot allocate memory" while
+# reading these files during `podman build` (flaky buildah/virtiofs
+# xattr bug on macOS). Excluding them makes `podman compose up --build`
+# reliable. See also: podman 6.x which fixes the underlying issue.
+AGENTS.md
+CLAUDE.md
+
+# Generated
+next-env.d.ts
+
+# Deployment
+.vercel
+
+# Docker
+Dockerfile
+.dockerignore
