@@ -20,6 +20,34 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Uploading documents
+
+The **Upload** button on the home/search pages lets you send a local file
+straight to Cloudflare R2 and automatically start processing it:
+
+1. The browser asks the API for a presigned PUT URL
+   (`GET /api/documents/upload-url/{file_path}`).
+2. The file is uploaded directly from the browser to R2 — it never passes
+   through the API server.
+3. As soon as the upload completes, the browser automatically triggers
+   processing (`POST /api/documents/{job_id}/process`) so the document is
+   embedded and searchable without any further user action. Transient
+   failures (network errors / 5xx) are retried up to 3 times with a short
+   backoff; a permanently failed dispatch is surfaced in the UI with a
+   **Retry** action.
+
+### Organization and user IDs
+
+The upload endpoint requires `organization_id` and `user_id` query params,
+but the web app does not have authentication yet. Both are **required**
+and must be configured as environment variables:
+
+- `NEXT_PUBLIC_ORGANIZATION_ID`
+- `NEXT_PUBLIC_USER_ID`
+
+Set them in `.env.local` (or the docker-compose environment). If either is
+missing, the upload flow fails with a clear error.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
