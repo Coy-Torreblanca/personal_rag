@@ -117,6 +117,11 @@ class DocumentBase(SQLModel):
     s3_key: str = Field(default=None, max_length=500)  # S3 object key
     status: DocumentStatus = Field(default=DocumentStatus.UPLOADED, max_length=50)
     meta_data: dict[str, object] = Field(default={}, sa_column=Column(JSON))
+    # LLM-generated dense summary (150-250 words) produced by the DeepSeek
+    # worker stage; nullable because documents are processed asynchronously
+    # after upload. Stored as TEXT (like ``DocumentChunk.content``) since
+    # summaries routinely exceed 255 characters.
+    summary: str | None = Field(default=None, sa_column=Column(Text))
 
 
 class Document(DocumentBase, table=True):

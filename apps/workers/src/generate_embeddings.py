@@ -1,10 +1,9 @@
 import logging
 from contextlib import contextmanager
-import requests
 import openai
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from uuid import UUID
-from sqlmodel import col, delete
+from sqlmodel import delete
 
 from database.models import DocumentChunk
 from database.session import get_db
@@ -64,39 +63,61 @@ def upload_embeddings(
 
 
 def generate_embeddings(
-    markdown_download_url: str, document_id: str, organization_id: str
+    file_text: str, document_id: str, organization_id: str, document_summary: str
 ) -> None:
     """
-    Download markdown content, chunk it, generate embeddings, and store them.
+    Chunk document text, generate embeddings, and store them.
 
-    Fetches the markdown file from the given presigned URL, splits it into
-    chunks using RecursiveCharacterTextSplitter, generates OpenAI embeddings
-    for each chunk, and persists everything to the database.
+    Splits ``file_text`` into overlapping chunks, appends the LLM-generated
+    ``document_summary`` as a final top-level chunk (so whole-document
+    semantics stay queryable), generates OpenAI embeddings for every input,
+    and persists the chunks to the database.
 
     Args:
-        markdown_download_url: Presigned S3 URL to download the markdown file.
+        file_text: The full markdown text of the processed document.
         document_id: UUID string of the document being processed.
         organization_id: UUID string of the owning organization.
+        document_summary: Non-empty LLM summary of the document; appended as
+            the final chunk so it is embedded and searchable like any other.
+
+    Raises:
+        ValueError: If the embedding API returns a number of vectors that
+            does not match the number of input chunks.
+        openai.OpenAIError: If the upstream embeddings call fails.
     """
     logger.info("Generating embeddings for document %s", document_id)
 
-    response = requests.get(markdown_download_url)
-    response.raise_for_status()
-    file_text = response.text
-    logger.debug(
-        "Downloaded markdown content (%d chars) for document %s",
-        len(file_text),
-        document_id,
-    )
-
     file_chunks = chunk_document(file_text)
     logger.debug("Split document %s into %d chunks", document_id, len(file_chunks))
+
+    # Embed the summary alongside the content chunks: it becomes an extra
+    # top-level vector that captures whole-document intent for semantic
+    # search. ``generate_llm_summary`` upstream guarantees a non-empty
+    # summary, so this is always a meaningful input.
+    file_chunks.append(document_summary)
+    logger.debug(
+        "Appended document summary as final embedding input for document %s "
+        "(total %d inputs)",
+        document_id,
+        len(file_chunks),
+    )
 
     response = client.embeddings.create(
         input=file_chunks, model="text-embedding-3-small"
     )
 
     embeddings = [item.embedding for item in response.data]
+
+    # The API returns exactly one vector per input, in order. A count
+    # mismatch means the response is truncated or corrupt — fail loudly with
+    # a clear message instead of letting ``upload_embeddings`` crash on an
+    # ``IndexError`` deep in the persistence loop.
+    if len(embeddings) != len(file_chunks):
+        raise ValueError(
+            f"Embedding count mismatch: expected {len(file_chunks)} embeddings "
+            f"for document {document_id}, got {len(embeddings)}."
+        )
+
     logger.debug(
         "Generated %d embeddings for document %s",
         len(embeddings),
@@ -130,8 +151,8 @@ def chunk_document(text: str) -> list[str]:
 
 if __name__ == "__main__":
     upload_embeddings(
-        [["asdf"]],
-        [[123]],
+        ["asdf"],
+        [[0.1] * 1536],
         "4f225ee2-e003-4820-93de-c5de4b2bd2a4",
         "70885aed-0503-4656-bb72-368a26758575",
     )

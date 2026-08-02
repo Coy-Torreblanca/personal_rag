@@ -3,7 +3,6 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from requests import HTTPError
 
 from src.generate_embeddings import (
     chunk_document,
@@ -134,47 +133,88 @@ class TestGenerateEmbeddings:
 
     SAMPLE_ID = "4f225ee2-e003-4820-93de-c5de4b2bd2a4"
     SAMPLE_ORG = "70885aed-0503-4656-bb72-368a26758575"
-    SAMPLE_URL = "https://example.com/doc.md"
+    SAMPLE_TEXT = (
+        "# Test Document\n\nThis is a test document with some content.\n\n"
+        "It has multiple paragraphs.\n\nAnd some more text here.\n\n" * 10
+    )
+    SAMPLE_SUMMARY = "[Overview]: A test document used by the worker test suite."
 
-    def test_fetches_markdown_from_url(
-        self, mock_requests_get, mock_openai_client, _mock_gen_emb_db
+    def test_generates_embeddings_for_chunks_and_summary(
+        self, mock_openai_client, _mock_gen_emb_db
     ) -> None:
-        """The markdown file is fetched from the provided URL."""
-        generate_embeddings(self.SAMPLE_URL, self.SAMPLE_ID, self.SAMPLE_ORG)
-
-        mock_requests_get.assert_called_once_with(self.SAMPLE_URL)
-        mock_requests_get.return_value.raise_for_status.assert_called_once()
-
-    def test_generates_embeddings_for_chunks(
-        self, mock_requests_get, mock_openai_client, _mock_gen_emb_db
-    ) -> None:
-        """OpenAI embeddings are generated for the chunked content."""
-        generate_embeddings(self.SAMPLE_URL, self.SAMPLE_ID, self.SAMPLE_ORG)
+        """OpenAI embeddings are generated for the chunked content + summary."""
+        generate_embeddings(
+            self.SAMPLE_TEXT, self.SAMPLE_ID, self.SAMPLE_ORG, self.SAMPLE_SUMMARY
+        )
 
         mock_openai_client.embeddings.create.assert_called_once()
         call_kwargs = mock_openai_client.embeddings.create.call_args[1]
         assert call_kwargs["model"] == "text-embedding-3-small"
         assert isinstance(call_kwargs["input"], list)
-        assert len(call_kwargs["input"]) > 0
+        # At least one content chunk plus the summary chunk.
+        assert len(call_kwargs["input"]) >= 2
 
-    def test_uploads_embeddings_to_db(
-        self, mock_requests_get, mock_openai_client, _mock_gen_emb_db
+    def test_appends_summary_as_final_input(
+        self, mock_openai_client, _mock_gen_emb_db
     ) -> None:
-        """Embeddings are persisted to the database."""
+        """The LLM summary is the last embedding input."""
+        generate_embeddings(
+            self.SAMPLE_TEXT, self.SAMPLE_ID, self.SAMPLE_ORG, self.SAMPLE_SUMMARY
+        )
+
+        call_kwargs = mock_openai_client.embeddings.create.call_args[1]
+        assert call_kwargs["input"][-1] == self.SAMPLE_SUMMARY
+
+    def test_uploads_chunks_and_summary_to_db(
+        self, mock_openai_client, _mock_gen_emb_db
+    ) -> None:
+        """Every input chunk — including the summary — is persisted."""
         mock_session = _mock_gen_emb_db
 
-        generate_embeddings(self.SAMPLE_URL, self.SAMPLE_ID, self.SAMPLE_ORG)
+        generate_embeddings(
+            self.SAMPLE_TEXT, self.SAMPLE_ID, self.SAMPLE_ORG, self.SAMPLE_SUMMARY
+        )
 
         assert mock_session.add.call_count >= 1
         mock_session.commit.assert_called_once()
 
-    def test_requests_failure_propagates(
-        self, mock_requests_get, mock_openai_client, _mock_gen_emb_db
+        # The final chunk persisted must be the summary, mirroring the
+        # input order (chunks, then summary).
+        last = mock_session.add.call_args_list[-1][0][0]
+        assert last.content == self.SAMPLE_SUMMARY
+
+    def test_empty_document_embeds_only_summary(
+        self, mock_openai_client, _mock_gen_emb_db
     ) -> None:
-        """A failed HTTP request raises an exception."""
-        mock_requests_get.return_value.raise_for_status.side_effect = HTTPError(
-            "404 Not Found"
+        """An empty document still yields one input: the summary."""
+        generate_embeddings(
+            "", self.SAMPLE_ID, self.SAMPLE_ORG, self.SAMPLE_SUMMARY
         )
 
-        with pytest.raises(HTTPError):
-            generate_embeddings(self.SAMPLE_URL, self.SAMPLE_ID, self.SAMPLE_ORG)
+        call_kwargs = mock_openai_client.embeddings.create.call_args[1]
+        assert call_kwargs["input"] == [self.SAMPLE_SUMMARY]
+
+    def test_embedding_count_mismatch_raises(
+        self, mock_openai_client, _mock_gen_emb_db
+    ) -> None:
+        """A truncated API response raises a clear ValueError."""
+
+        def _fake_create(**kwargs):
+            # Return one fewer vector than inputs — simulates a truncated
+            # or corrupt upstream response.
+            n_inputs = len(kwargs["input"])
+            response = MagicMock()
+            response.data = [
+                MagicMock(embedding=[0.1] * 1536) for _ in range(n_inputs - 1)
+            ]
+            return response
+
+        mock_openai_client.embeddings.create.side_effect = _fake_create
+
+        with pytest.raises(ValueError, match="Embedding count mismatch"):
+            generate_embeddings(
+                self.SAMPLE_TEXT,
+                self.SAMPLE_ID,
+                self.SAMPLE_ORG,
+                self.SAMPLE_SUMMARY,
+            )

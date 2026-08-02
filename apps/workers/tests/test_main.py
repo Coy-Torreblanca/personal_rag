@@ -11,7 +11,7 @@ from src.main import (
     _fail_job,
     celery,
     download_key,
-    generate_embeddings,
+    download_file_text,
     health_check,
     is_plain_text_file,
     mark_job_and_document_as_processed,
@@ -40,6 +40,35 @@ def _mock_main_db() -> Generator[MagicMock, None, None]:
 
 
 @pytest.fixture(autouse=True)
+def _mock_download_and_summary() -> Generator[
+    tuple[MagicMock, MagicMock], None, None
+]:
+    """Patch ``src.main.requests.get`` and ``src.main.generate_llm_summary``.
+
+    ``process_document`` now downloads the markdown text itself (via
+    ``download_file_text``) and summarizes it with DeepSeek before embedding.
+    Both must be stubbed for every test in this module so no real HTTP calls
+    (and no ``DEEPSEEK_API_KEY`` requirement) leak into the suite.
+
+    The yielded ``(mock_get, mock_summary)`` pair lets individual tests
+    override behavior, e.g. simulate a failed download via
+    ``mock_get.return_value.raise_for_status.side_effect = ...``.
+    """
+    from tests.conftest import SAMPLE_MARKDOWN, SAMPLE_SUMMARY
+
+    mock_response = MagicMock()
+    mock_response.text = SAMPLE_MARKDOWN
+    mock_response.raise_for_status = MagicMock()
+
+    with patch(
+        "src.main.requests.get", return_value=mock_response
+    ) as mock_get, patch(
+        "src.main.generate_llm_summary", return_value=SAMPLE_SUMMARY
+    ) as mock_summary:
+        yield mock_get, mock_summary
+
+
+@pytest.fixture(autouse=True)
 def _mock_env_bucket() -> Generator[None, None, None]:
     """Ensure ``BUCKET_NAME`` env var is set."""
     with patch.dict("os.environ", {"BUCKET_NAME": "test-bucket"}):
@@ -50,12 +79,10 @@ def _mock_env_bucket() -> Generator[None, None, None]:
 def _mock_generate_embeddings_in_main() -> Generator[MagicMock, None, None]:
     """Mock the embedding pipeline within ``src.main``.
 
-    ``src.main.generate_embeddings`` is now a *wrapper* that (a) generates
-    the presigned GET URL via ``R2Client`` and (b) delegates to the imported
-    ``_generate_embeddings`` (download → chunk → embed → persist). We patch
-    ``src.main._generate_embeddings`` so the wrapper still runs and the
-    presigned-URL logic is exercised, while real HTTP/OpenAI/DB work is
-    stubbed out.
+    ``process_document`` delegates the chunk → embed → persist step to the
+    imported ``_generate_embeddings``. We patch ``src.main._generate_embeddings``
+    so the real HTTP/OpenAI/DB work is stubbed out while the rest of the
+    pipeline (download, LLM summary, status persistence) still runs.
     """
     with patch("src.main._generate_embeddings") as mock_embeddings:
         yield mock_embeddings
@@ -217,9 +244,10 @@ class TestFileTypeHelpers:
 # signature ``(document_id, organization_id, s3_key, download_url,
 # upload_url)`` — no ``self`` since it's already bound to the task
 # instance.  We call ``.run`` directly to skip the Celery wrapper.
-# ``_generate_embeddings`` is mocked at the module level to avoid
-# real HTTP calls; the ``generate_embeddings`` wrapper (presigned URL
-# generation) still runs.
+# ``_generate_embeddings``, ``requests.get`` (download stage) and
+# ``generate_llm_summary`` (DeepSeek stage) are mocked at the module
+# level so the pipeline orchestration runs without real HTTP calls,
+# an OpenAI/DeepSeek key, or a database.
 
 
 class TestProcessDocument:
@@ -273,8 +301,9 @@ class TestProcessDocument:
     def test_updates_document_to_processed(
         self, mock_modal_cls, mock_r2_client, _mock_main_db
     ) -> None:
-        """After processing, the document status is set to PROCESSED."""
+        """After processing, the document is PROCESSED with the summary."""
         from database.models import DocumentStatus, ProcessingJobStatus
+        from tests.conftest import SAMPLE_SUMMARY
 
         mock_session = _mock_main_db
         mock_doc = MagicMock()
@@ -298,8 +327,94 @@ class TestProcessDocument:
         )
 
         assert mock_doc.status.value == "processed"
+        assert mock_doc.summary == SAMPLE_SUMMARY
         assert mock_job.status.value == "completed"
         mock_session.commit.assert_called_once()
+
+    def test_summarizes_downloaded_content(
+        self, mock_modal_cls, mock_r2_client, _mock_main_db, _mock_download_and_summary
+    ) -> None:
+        """The LLM summary is generated from the downloaded markdown text."""
+        from tests.conftest import SAMPLE_MARKDOWN
+
+        _, mock_summary = _mock_download_and_summary
+
+        process_document.run(
+            self.SAMPLE_DOC_ID,
+            self.SAMPLE_ORG_ID,
+            self.SAMPLE_S3_KEY,
+            self.SAMPLE_DOWNLOAD_URL,
+            self.SAMPLE_UPLOAD_URL,
+        )
+
+        mock_summary.assert_called_once_with(SAMPLE_MARKDOWN)
+
+    def test_passes_summary_to_embedding_pipeline(
+        self,
+        mock_modal_cls,
+        mock_r2_client,
+        _mock_main_db,
+        _mock_download_and_summary,
+        _mock_generate_embeddings_in_main,
+    ) -> None:
+        """The embedding pipeline receives content, ids, and the summary.
+
+        The summary is appended as an extra top-level chunk, so it must reach
+        ``_generate_embeddings`` alongside the raw document text.
+        """
+        from tests.conftest import SAMPLE_MARKDOWN, SAMPLE_SUMMARY
+
+        process_document.run(
+            self.SAMPLE_DOC_ID,
+            self.SAMPLE_ORG_ID,
+            self.SAMPLE_S3_KEY,
+            self.SAMPLE_DOWNLOAD_URL,
+            self.SAMPLE_UPLOAD_URL,
+        )
+
+        _mock_generate_embeddings_in_main.assert_called_once_with(
+            SAMPLE_MARKDOWN,
+            self.SAMPLE_DOC_ID,
+            self.SAMPLE_ORG_ID,
+            SAMPLE_SUMMARY,
+        )
+
+    def test_download_failure_marks_job_failed(
+        self, mock_modal_cls, mock_r2_client, _mock_main_db, _mock_download_and_summary
+    ) -> None:
+        """A failed markdown download fails the document/job loudly."""
+        from requests import HTTPError
+
+        mock_get, _ = _mock_download_and_summary
+        mock_get.return_value.raise_for_status.side_effect = HTTPError(
+            "403 Forbidden"
+        )
+
+        mock_session = _mock_main_db
+        mock_doc = MagicMock()
+        mock_doc.status = MagicMock(value="processing")
+        mock_job = MagicMock()
+        mock_job.status = MagicMock(value="processing")
+
+        def fake_get(model, id_):
+            if "Document" in str(model):
+                return mock_doc
+            return mock_job
+
+        mock_session.get.side_effect = fake_get
+        process_document.push_request(id=self.SAMPLE_JOB_ID)
+
+        with pytest.raises(HTTPError):
+            process_document.run(
+                self.SAMPLE_DOC_ID,
+                self.SAMPLE_ORG_ID,
+                self.SAMPLE_S3_KEY,
+                self.SAMPLE_DOWNLOAD_URL,
+                self.SAMPLE_UPLOAD_URL,
+            )
+
+        assert mock_doc.status.value == "error"
+        assert mock_job.status.value == "failed"
 
     def test_fail_job_on_exception(
         self, mock_modal_cls, mock_r2_client, _mock_main_db
@@ -579,23 +694,36 @@ class TestParseDocumentHelper:
             )
 
 
-# ── generate_embeddings (wrapper in src.main) ────────────────────
+# ── download_file_text (pipeline stage in src.main) ─────────────
 
 
-class TestGenerateEmbeddingsWrapper:
-    """Tests for the ``generate_embeddings`` wrapper in ``src.main``."""
+class TestDownloadFileText:
+    """Tests for the ``download_file_text`` pipeline stage."""
 
     SAMPLE_DOC_ID = "4f225ee2-e003-4820-93de-c5de4b2bd2a4"
-    SAMPLE_ORG_ID = "70885aed-0503-4656-bb72-368a26758575"
     SAMPLE_S3_KEY = "documents/report.pdf"
 
+    def test_returns_downloaded_markdown_text(
+        self, mock_r2_client, _mock_download_and_summary
+    ) -> None:
+        """The presigned URL body is returned as the document text."""
+        mock_get, _ = _mock_download_and_summary
+        from tests.conftest import SAMPLE_MARKDOWN
+
+        result = download_file_text(self.SAMPLE_S3_KEY, False, self.SAMPLE_DOC_ID)
+
+        assert result == SAMPLE_MARKDOWN
+        # Downloaded exactly once, with a timeout so a hung R2 connection
+        # cannot block the worker indefinitely.
+        mock_get.assert_called_once_with(
+            "https://example.com/markdown-download.md", timeout=120
+        )
+
     def test_generates_url_for_converted_markdown(
-        self, mock_r2_client, _mock_generate_embeddings_in_main
+        self, mock_r2_client, _mock_download_and_summary
     ) -> None:
         """Converted files get a presigned URL for ``<key>.md``."""
-        generate_embeddings(
-            self.SAMPLE_S3_KEY, False, self.SAMPLE_ORG_ID, self.SAMPLE_DOC_ID
-        )
+        download_file_text(self.SAMPLE_S3_KEY, False, self.SAMPLE_DOC_ID)
 
         mock_r2_client.generate_presigned_url.assert_called_once_with(
             key=self.SAMPLE_S3_KEY + ".md",
@@ -605,12 +733,10 @@ class TestGenerateEmbeddingsWrapper:
         )
 
     def test_generates_url_for_plain_text_file(
-        self, mock_r2_client, _mock_generate_embeddings_in_main
+        self, mock_r2_client, _mock_download_and_summary
     ) -> None:
         """Plain-text files get a presigned URL for the original key."""
-        generate_embeddings(
-            "documents/notes.txt", True, self.SAMPLE_ORG_ID, self.SAMPLE_DOC_ID
-        )
+        download_file_text("documents/notes.txt", True, self.SAMPLE_DOC_ID)
 
         mock_r2_client.generate_presigned_url.assert_called_once_with(
             key="documents/notes.txt",
@@ -619,34 +745,35 @@ class TestGenerateEmbeddingsWrapper:
             inline=False,
         )
 
-    def test_delegates_to_embedding_pipeline(
-        self, mock_r2_client, _mock_generate_embeddings_in_main
+    def test_raises_on_http_error(
+        self, mock_r2_client, _mock_download_and_summary
     ) -> None:
-        """The wrapper delegates with (url, document_id, organization_id)."""
-        mock_r2_client.generate_presigned_url.return_value.url = (
-            "https://example.com/markdown.md"
+        """A non-2xx download response raises instead of returning garbage.
+
+        The old implementation silently embedded the error page body; the
+        current one calls ``raise_for_status`` so an expired or missing
+        presigned URL fails the job loudly.
+        """
+        from requests import HTTPError
+
+        mock_get, _ = _mock_download_and_summary
+        mock_get.return_value.raise_for_status.side_effect = HTTPError(
+            "404 Not Found"
         )
 
-        generate_embeddings(
-            self.SAMPLE_S3_KEY, False, self.SAMPLE_ORG_ID, self.SAMPLE_DOC_ID
-        )
+        with pytest.raises(HTTPError):
+            download_file_text(self.SAMPLE_S3_KEY, False, self.SAMPLE_DOC_ID)
 
-        _mock_generate_embeddings_in_main.assert_called_once_with(
-            "https://example.com/markdown.md",
-            self.SAMPLE_DOC_ID,
-            self.SAMPLE_ORG_ID,
-        )
-
-    def test_propagates_embedding_pipeline_failure(
-        self, mock_r2_client, _mock_generate_embeddings_in_main
+    def test_propagates_r2_failure(
+        self, mock_r2_client, _mock_download_and_summary
     ) -> None:
-        """Failures from the embedding pipeline propagate to the caller."""
-        _mock_generate_embeddings_in_main.side_effect = RuntimeError("OpenAI down")
+        """Failures from presigned-URL generation propagate to the caller."""
+        mock_r2_client.generate_presigned_url.side_effect = RuntimeError(
+            "R2 unavailable"
+        )
 
-        with pytest.raises(RuntimeError, match="OpenAI down"):
-            generate_embeddings(
-                self.SAMPLE_S3_KEY, False, self.SAMPLE_ORG_ID, self.SAMPLE_DOC_ID
-            )
+        with pytest.raises(RuntimeError, match="R2 unavailable"):
+            download_file_text(self.SAMPLE_S3_KEY, False, self.SAMPLE_DOC_ID)
 
 
 # ── mark_job_and_document_as_processed ───────────────────────────
@@ -671,8 +798,12 @@ class TestMarkJobAndDocumentAsProcessed:
 
         return _get
 
-    def test_marks_document_processed_and_job_completed(self, _mock_main_db) -> None:
-        """Both rows are updated and the transaction is committed."""
+    def test_marks_document_processed_and_job_completed(
+        self, _mock_main_db
+    ) -> None:
+        """Both rows are updated, the summary persisted, and it commits."""
+        from tests.conftest import SAMPLE_SUMMARY
+
         mock_session = _mock_main_db
         mock_doc = MagicMock()
         mock_doc.status = MagicMock(value="processing")
@@ -680,9 +811,12 @@ class TestMarkJobAndDocumentAsProcessed:
         mock_job.status = MagicMock(value="processing")
         mock_session.get.side_effect = self._make_get_side_effect(mock_doc, mock_job)
 
-        mark_job_and_document_as_processed(self.SAMPLE_DOC_ID, self.SAMPLE_JOB_ID)
+        mark_job_and_document_as_processed(
+            self.SAMPLE_DOC_ID, self.SAMPLE_JOB_ID, SAMPLE_SUMMARY
+        )
 
         assert mock_doc.status.value == "processed"
+        assert mock_doc.summary == SAMPLE_SUMMARY
         assert mock_job.status.value == "completed"
         mock_session.commit.assert_called_once()
 
@@ -691,7 +825,9 @@ class TestMarkJobAndDocumentAsProcessed:
         mock_session = _mock_main_db
         mock_session.get.return_value = None
 
-        mark_job_and_document_as_processed(self.SAMPLE_DOC_ID, self.SAMPLE_JOB_ID)
+        mark_job_and_document_as_processed(
+            self.SAMPLE_DOC_ID, self.SAMPLE_JOB_ID, "some summary"
+        )
 
         mock_session.commit.assert_called_once()
 
@@ -706,6 +842,8 @@ class TestMarkJobAndDocumentAsProcessed:
         mock_session.commit.side_effect = Exception("DB error")
 
         with pytest.raises(Exception, match="DB error"):
-            mark_job_and_document_as_processed(self.SAMPLE_DOC_ID, self.SAMPLE_JOB_ID)
+            mark_job_and_document_as_processed(
+                self.SAMPLE_DOC_ID, self.SAMPLE_JOB_ID, "some summary"
+            )
 
         mock_session.rollback.assert_called_once()

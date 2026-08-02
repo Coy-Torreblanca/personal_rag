@@ -29,6 +29,13 @@ SAMPLE_MARKDOWN = (
     "# Test Document\n\nThis is a test document with some content.\n\n"
     "It has multiple paragraphs.\n\nAnd some more text here.\n\n" * 10
 )
+# Dense summary as produced by the DeepSeek worker stage
+# (``src/generate_llm_summary.py``).
+SAMPLE_SUMMARY = (
+    "[Overview]: A test document used by the worker test suite.\n"
+    "[Key Concepts & Entities]: pytest, Celery, R2, OpenAI.\n"
+    "[Core Findings / Arguments]: Verifies the document pipeline end to end."
+)
 
 
 # ── Helper: build a mock ``get_db`` generator ───────────────────
@@ -56,32 +63,25 @@ def mock_openai_client() -> Generator[MagicMock, None, None]:
     """Provide a mock OpenAI client.
 
     Patches ``openai.Client`` so that ``generate_embeddings``
-    uses a mock client.  The returned mock provides a
-    ``.embeddings.create()`` helper that returns fake embedding data.
+    uses a mock client.  The fake ``.embeddings.create()`` returns
+    exactly one embedding vector per input chunk (full 1536-dim
+    vectors for pgvector), so tests never need to know the chunk
+    count in advance and the production count-mismatch guard is
+    satisfied by construction.
     """
     with patch("src.generate_embeddings.client") as mock_client:
-        # Set up a fake embedding response (full 1536-dim vectors for pgvector)
-        fake_embedding_data = [
-            MagicMock(embedding=[0.1] * 1536),
-            MagicMock(embedding=[0.2] * 1536),
-            MagicMock(embedding=[0.3] * 1536),
-        ]
-        mock_client.embeddings.create.return_value.data = fake_embedding_data
+
+        def _fake_create(**kwargs):
+            """Return one fake embedding per input, in order."""
+            n_inputs = len(kwargs["input"])
+            response = MagicMock()
+            response.data = [
+                MagicMock(embedding=[0.1] * 1536) for _ in range(n_inputs)
+            ]
+            return response
+
+        mock_client.embeddings.create.side_effect = _fake_create
         yield mock_client
-
-
-# ── Mock requests fixture ─────────────────────────────────────────
-
-
-@pytest.fixture
-def mock_requests_get() -> Generator[MagicMock, None, None]:
-    """Mock ``requests.get`` to return controlled markdown content."""
-    with patch("src.generate_embeddings.requests.get") as mock_get:
-        mock_response = MagicMock()
-        mock_response.text = SAMPLE_MARKDOWN
-        mock_response.raise_for_status = MagicMock()
-        mock_get.return_value = mock_response
-        yield mock_get
 
 
 # ── Mock Modal fixture ────────────────────────────────────────────

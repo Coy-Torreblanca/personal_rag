@@ -8,15 +8,16 @@ documents into markdown, generate embeddings, and persist the results.
 
 ```
 src/
-  main.py                 — Celery app & task definitions (process_document)
-  generate_embeddings.py  — Text chunking + OpenAI embedding pipeline
-  parse_document.py       — Modal-hosted Docling parser (deployed separately)
+  main.py                    — Celery app & task definitions (process_document)
+  generate_embeddings.py     — Text chunking + OpenAI embedding pipeline
+  generate_llm_summary.py    — Dense LLM summary generation via DeepSeek
+  parse_document.py          — Modal-hosted Docling parser (deployed separately)
 ```
 
 ## Process Document
 
 `process_document` (defined in `src/main.py`) is the Celery task that runs the
-full document-processing pipeline. It runs in three stages:
+full document-processing pipeline. It runs in four stages:
 
 1. **Parse** — `parse_document()`
    - Plain-text files (`.txt`, `.md`, `.html`, `.yaml`, ...) are already
@@ -24,16 +25,31 @@ full document-processing pipeline. It runs in three stages:
    - All other file types are sent to the Modal-hosted `DoclingParser`, which
      converts the R2-hosted document into a markdown file and uploads it back
      to R2 with an additional `.md` extension.
-2. **Embed** — `generate_embeddings()`
+2. **Download** — `download_file_text()`
    - Generates a short-lived presigned GET URL for the markdown object
-     (the original key for text files, `<s3_key>.md` for converted files).
-   - Delegates to `src/generate_embeddings.py` to download the markdown,
-     chunk it, generate OpenAI embeddings, and persist chunks to the database.
-3. **Persist status** — `mark_job_and_document_as_processed()`
-   - Marks the document as `PROCESSED` and the processing job as `COMPLETED`.
+     (the original key for text files, `<s3_key>.md` for converted files)
+     and downloads it once. The downloaded text feeds both the summary and
+     embedding stages, so the content is never fetched twice.
+3. **Summarize & Embed** — `generate_llm_summary()` + `generate_embeddings()`
+   - `generate_llm_summary()` sends the markdown to DeepSeek
+     (`DEEPSEEK_API_KEY`, `deepseek-v4-flash`) and returns a dense
+     150–250 word summary.
+   - `generate_embeddings()` chunks the markdown, appends the summary as an
+     extra top-level chunk, generates OpenAI embeddings for every input, and
+     persists the chunks to the database.
+4. **Persist status** — `mark_job_and_document_as_processed()`
+   - Stores the LLM summary on the document row (`documents.summary`), marks
+     the document as `PROCESSED` and the processing job as `COMPLETED`.
 
 On any failure, `_fail_job()` marks the document as `ERROR` and the job as
 `FAILED`, and the exception is re-raised for Celery's retry/error reporting.
+
+### Configuration
+
+| Variable | Used by | Purpose |
+| --- | --- | --- |
+| `DEEPSEEK_API_KEY` | `generate_llm_summary.py` | DeepSeek chat-completions auth (read lazily, at call time) |
+| `BUCKET_NAME` | `main.py` | R2 bucket holding documents and converted markdown |
 
 ### Deploying the Modal parser
 

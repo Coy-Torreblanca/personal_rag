@@ -4,17 +4,20 @@ Workers - Background job processing for the 30ai platform.
 This module defines Celery tasks for document processing, including:
 - Health check endpoint for monitoring.
 - Document processing pipeline that parses documents via Modal/Docling,
-  generates embeddings, and updates job/document status in the database.
+  downloads the resulting markdown, generates an LLM summary (DeepSeek) and
+  embeddings (OpenAI), and updates job/document status in the database.
 """
 
 import os
 import modal
+import requests
 from contextlib import contextmanager
 from celery import Celery
 
 
 from .parse_document import APP_NAME
 from .generate_embeddings import generate_embeddings as _generate_embeddings
+from .generate_llm_summary import generate_llm_summary
 from database.models import Document, DocumentStatus, ProcessingJob, ProcessingJobStatus
 from database.session import get_db
 from s3.client import R2Client
@@ -182,34 +185,41 @@ def parse_document(
     return {"status": "success", "pages": pages}
 
 
-def generate_embeddings(
+def download_file_text(
     s3_key: str,
     is_text_file: bool,
-    organization_id: str,
     document_id: str,
-) -> None:
-    """Generate and persist embeddings for a processed document.
+) -> str:
+    """Download the processed document's markdown text from R2.
 
-    This is a thin orchestration wrapper around
-    :func:`src.generate_embeddings.generate_embeddings` (imported as
-    ``_generate_embeddings`` to avoid shadowing this wrapper):
+    This is a thin orchestration helper that runs *before* the LLM summary
+    and embedding stages of the pipeline:
 
     1. Resolve the markdown object key — the original object for plain-text
        files, ``<s3_key>.md`` for Docling-converted files.
     2. Generate a short-lived presigned GET URL for that object.
-    3. Delegate download → chunk → embed → persist to the embedding pipeline.
+    3. Download the object body and return it as text.
+
+    The downloaded text is the single source of truth for both the LLM
+    summarizer (:func:`generate_llm_summary`) and the embedding pipeline
+    (:func:`src.generate_embeddings.generate_embeddings`), so each stage
+    fetches the content exactly once.
 
     Args:
         s3_key: Original object key in the bucket.
         is_text_file: Whether the object is a plain-text file.
-        organization_id: UUID string of the owning organization.
         document_id: UUID string of the document being processed.
+
+    Returns:
+        The markdown text of the processed document.
 
     Raises:
         KeyError: If the ``BUCKET_NAME`` environment variable is not set.
         PresignedUrlError: If the presigned URL cannot be generated.
+        requests.HTTPError: If the presigned URL returns a non-2xx response
+            (e.g. an expired URL or a missing object).
     """
-    logger.info("Generating embeddings for document %s", document_id)
+    logger.info("Downloading markdown content for document %s", document_id)
 
     # TODO Add expiration logic (e.g. derive from document size).
     expiration = 3600
@@ -229,20 +239,35 @@ def generate_embeddings(
 
     # NOTE: presigned URLs carry credentials — log only the object key, never
     # the URL itself.
-    _generate_embeddings(response.url, document_id, organization_id)
+    response = requests.get(response.url, timeout=120)
 
-    logger.info("Finished generating embeddings for document %s", document_id)
+    # Surface HTTP failures loudly: a 4xx/5xx from an expired or missing
+    # presigned URL must fail the job, not silently embed an error page.
+    response.raise_for_status()
+
+    file_text = response.text
+    logger.debug(
+        "Downloaded markdown content (%d chars) for document %s",
+        len(file_text),
+        document_id,
+    )
+    return file_text
 
 
-def mark_job_and_document_as_processed(document_id: str, job_id: str) -> None:
+def mark_job_and_document_as_processed(
+    document_id: str, job_id: str, summary: str
+) -> None:
     """Mark a document and its processing job as successfully processed.
 
-    Sets the document status to PROCESSED and the processing job status to
+    Sets the document status to PROCESSED, persists the generated LLM
+    summary on the document row, sets the processing job status to
     COMPLETED, then commits. Rows that no longer exist are skipped safely.
 
     Args:
         document_id: UUID string of the document to mark as processed.
         job_id: UUID string of the processing job to mark as completed.
+        summary: The generated LLM summary to persist on the document row;
+            displayed to end users and used for semantic search.
 
     Raises:
         Exception: Re-raised (after rollback) if the transaction fails, so the
@@ -253,6 +278,7 @@ def mark_job_and_document_as_processed(document_id: str, job_id: str) -> None:
             doc = db.get(Document, document_id)
             if doc:
                 doc.status = DocumentStatus.PROCESSED
+                doc.summary = summary
 
             job = db.get(ProcessingJob, job_id)
             if job:
@@ -292,9 +318,12 @@ def process_document(
          parser and are treated as already-converted markdown.
        - **All other file types** are sent to the Modal-hosted Docling parser
          for conversion to markdown.
-    2. Generates a presigned S3 URL for the resulting markdown file.
-    3. Generates embeddings for the markdown content via OpenAI.
-    4. Updates the document and job statuses in the database.
+    2. Downloads the resulting markdown text from R2 via a presigned URL.
+    3. Generates a dense LLM summary of the markdown via DeepSeek.
+    4. Generates OpenAI embeddings for the markdown chunks *plus* the summary
+       and persists the chunks to the database.
+    5. Persists the summary on the document row and marks the document/job
+       as PROCESSED/COMPLETED.
 
     Args:
         document_id: UUID string of the document to process.
@@ -329,17 +358,29 @@ def process_document(
             is_text_file=is_text_file,
         )
 
-        # Stage 2 — generate embeddings from the resulting markdown and
-        # persist them to the database.
-        generate_embeddings(
+        # Stage 2 — download the processed markdown text from R2 so it can be
+        # summarized and embedded without a second round-trip.
+        document_content = download_file_text(
             s3_key=s3_key,
             is_text_file=is_text_file,
-            organization_id=organization_id,
             document_id=document_id,
         )
 
-        # Stage 3 — persist the successful outcome on the document/job rows.
-        mark_job_and_document_as_processed(document_id, job_id)
+        # Stage 3 — generate a dense LLM summary. The summary is both
+        # persisted on the document row and embedded as an extra top-level
+        # chunk, so semantic search can match whole-document intent.
+        summary = generate_llm_summary(document_content)
+        logger.info(
+            "Generated LLM summary for document %s (%d chars)",
+            document_id,
+            len(summary),
+        )
+
+        _generate_embeddings(document_content, document_id, organization_id, summary)
+
+        # Stage 4 — persist the successful outcome (status + summary) on the
+        # document/job rows.
+        mark_job_and_document_as_processed(document_id, job_id, summary)
 
     except Exception:
         logger.exception(
