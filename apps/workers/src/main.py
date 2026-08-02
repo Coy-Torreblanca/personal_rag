@@ -54,6 +54,30 @@ def health_check():
     return {"status": "healthy", "service": "30ai-workers"}
 
 
+def is_plain_text_file(s3_key: str) -> bool:
+    """Return ``True`` when the object key refers to a plain-text file.
+
+    Plain-text files (``.txt``, ``.md``, ``.html``, ``.yaml``, ...) are
+    already markdown-compatible and do not need to be sent to the
+    Modal/Docling parser. All other file types must be converted before
+    embeddings can be generated.
+    """
+    return get_file_type_from_extension(s3_key) == FileType.TXT
+
+
+def download_key(s3_key: str, plain_text: bool) -> str:
+    """Return the R2 object key that should be exposed for download.
+
+    Args:
+        s3_key: Original object key in the bucket.
+        plain_text: Whether the object is a plain-text file.
+
+    Returns:
+        The original key for plain-text files, otherwise ``<s3_key>.md``.
+    """
+    return s3_key if plain_text else f"{s3_key}.md"
+
+
 def _fail_job(document_id: str, job_id: str) -> None:
     """
     Mark a document and its processing job as failed in the database.
@@ -125,21 +149,39 @@ def process_document(
         # TODO Make Async and have modal make fast api call to continue processing.
         m_cls = modal.Cls.from_name(APP_NAME, "DoclingParser")
 
-        if get_file_type_from_extension(s3_key) != FileType.TXT:
+        # Plain-text files are served directly; every other type is sent to
+        # Docling, which uploads the converted result as ``<s3_key>.md``.
+        is_text_file = is_plain_text_file(s3_key)
+
+        if not is_text_file:
+            logger.info(
+                "Submitting document %s to Docling for conversion (%s).",
+                document_id,
+                s3_key,
+            )
             result = m_cls().process_document.remote(download_url, upload_url)
 
             if result["status"] == "error":
+                error_message = result.get("message", "unknown Docling error")
                 logger.error(
                     "Docling parsing error for document %s: %s",
                     document_id,
-                    result["message"],
+                    error_message,
                 )
                 raise ValueError(
-                    f"Error in parsing document in Docling: {result['message']}"
+                    f"Error in parsing document in Docling: {error_message}"
                 )
 
+            logger.info(
+                "Docling conversion succeeded for document %s (%s pages).",
+                document_id,
+                result.get("pages", 1),
+            )
         else:
-            logger.info("Skipping file %r because it is a text file.", s3_key)
+            logger.info(
+                "Skipping docling processing on file %r because it is a text file.",
+                s3_key,
+            )
             result = {"status": "success", "pages": 1}
 
         client = R2Client(bucket_name=os.environ["BUCKET_NAME"])
@@ -147,12 +189,17 @@ def process_document(
         # TODO Add expiration logic.
         expiration = 3600
 
+        # Text files are already markdown and are downloaded as-is; files
+        # converted by Docling are downloaded as ``<original>.md``.
+        output_key = download_key(s3_key, is_text_file)
+
         response = client.generate_presigned_url(
-            key=s3_key + ".md",
+            key=output_key,
             expiration=expiration,
             method="GET",
             inline=False,
         )
+        logger.info("Generated presigned GET URL for %r", output_key)
 
         generate_embeddings(response.url, document_id, organization_id)
 

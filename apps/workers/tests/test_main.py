@@ -4,7 +4,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.main import _fail_job, celery, health_check, process_document
+from s3.models import FileType
+
+from src.main import (
+    _fail_job,
+    celery,
+    download_key,
+    health_check,
+    is_plain_text_file,
+    process_document,
+)
 
 
 # ── Module-level DB session mock ─────────────────────────────────
@@ -157,6 +166,41 @@ class TestFailJob:
         mock_session.commit.assert_called_once()
 
 
+class TestFileTypeHelpers:
+    """Tests for the plain-text detection and download-key helpers."""
+
+    def test_is_plain_text_file_true_for_txt(self) -> None:
+        """A ``.txt`` key is detected as plain text."""
+        with patch(
+            "src.main.get_file_type_from_extension",
+            return_value=FileType.TXT,
+        ):
+            assert is_plain_text_file("documents/notes.txt") is True
+
+    def test_is_plain_text_file_false_for_pdf(self) -> None:
+        """A ``.pdf`` key is not treated as plain text."""
+        with patch(
+            "src.main.get_file_type_from_extension",
+            return_value=FileType.PDF,
+        ):
+            assert is_plain_text_file("documents/report.pdf") is False
+
+    @pytest.mark.parametrize(
+        ("s3_key", "plain_text", "expected"),
+        [
+            # Plain-text files are served as themselves.
+            ("documents/notes.txt", True, "documents/notes.txt"),
+            # Docling-converted files are served as ``<key>.md``.
+            ("documents/report.pdf", False, "documents/report.pdf.md"),
+        ],
+    )
+    def test_download_key(
+        self, s3_key: str, plain_text: bool, expected: str
+    ) -> None:
+        """The download key follows the text-file vs. converted-file rule."""
+        assert download_key(s3_key, plain_text) == expected
+
+
 # ── process_document ─────────────────────────────────────────────
 # The task uses ``bind=True``. ``process_document.run`` has the
 # signature ``(document_id, organization_id, s3_key, download_url,
@@ -305,10 +349,10 @@ class TestProcessDocument:
         # The result should be a success with pages=1
         assert result == {"status": "success", "pages": 1}
 
-    def test_txt_file_still_generates_embeddings(
+    def test_txt_file_generates_presigned_url_for_original_file(
         self, mock_modal_cls, mock_r2_client, _mock_main_db
     ) -> None:
-        """Even for TXT files, embeddings and presigned URLs are generated."""
+        """TXT files are served as-is; no ``.md`` suffix is appended."""
         process_document.run(
             self.SAMPLE_DOC_ID,
             self.SAMPLE_ORG_ID,
@@ -317,9 +361,10 @@ class TestProcessDocument:
             self.SAMPLE_UPLOAD_URL,
         )
 
-        # Presigned URL should be generated with .md appended
+        # The presigned URL must point at the original object because no
+        # ``.md`` file is ever generated for plain-text files.
         mock_r2_client.generate_presigned_url.assert_called_once_with(
-            key=self.TXT_S3_KEY + ".md",
+            key=self.TXT_S3_KEY,
             expiration=3600,
             method="GET",
             inline=False,
@@ -363,5 +408,41 @@ class TestProcessDocument:
             )
 
         # The job/document should be marked as failed
+        assert mock_doc.status.value == "error"
+        assert mock_job.status.value == "failed"
+
+    def test_docling_error_without_message_uses_default(
+        self, mock_modal_cls, mock_r2_client, _mock_main_db
+    ) -> None:
+        """A missing ``message`` key falls back to a default error text."""
+        mock_session = _mock_main_db
+
+        mock_modal_cls.return_value().process_document.remote.return_value = {
+            "status": "error",
+        }
+
+        mock_doc = MagicMock()
+        mock_doc.status = MagicMock(value="processing")
+        mock_job = MagicMock()
+        mock_job.status = MagicMock(value="processing")
+
+        def fake_get(model, id_):
+            if "Document" in str(model):
+                return mock_doc
+            return mock_job
+
+        mock_session.get.side_effect = fake_get
+
+        process_document.push_request(id=self.SAMPLE_JOB_ID)
+
+        with pytest.raises(ValueError, match="unknown Docling error"):
+            process_document.run(
+                self.SAMPLE_DOC_ID,
+                self.SAMPLE_ORG_ID,
+                self.SAMPLE_S3_KEY,
+                self.SAMPLE_DOWNLOAD_URL,
+                self.SAMPLE_UPLOAD_URL,
+            )
+
         assert mock_doc.status.value == "error"
         assert mock_job.status.value == "failed"
