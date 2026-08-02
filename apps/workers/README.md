@@ -9,7 +9,7 @@ Process document runs in a Modal container and it uses Docling to make a R2 host
 process_document.py is a modal app. After making changes, you must deploy it with the following:
 
 ```bash
-uv run python3 -m modal deploy src/process_document.py
+uv run python3 -m modal deploy src/parse_document.py
 ```
 
 To see logs, you can run:

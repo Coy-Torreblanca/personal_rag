@@ -34,6 +34,7 @@ image = (
         extra_options="--extra-index-url www.download.pytorch.org/whl/cpu",
     )
     .env({"HF_HOME": CACHE_DIR})
+    .add_local_python_source("logutil")
 )
 
 app = modal.App(APP_NAME, image=image)
@@ -93,9 +94,7 @@ class DoclingParser:
 
         try:
             result = self.converter.convert(download_url)
-            markdown_content = result.document.export_to_markdown().raw_text.replace(
-                "\x00", ""
-            )
+            markdown_content = result.document.export_to_markdown().replace("\x00", "")
         except Exception as e:
             logger.exception("Docling conversion failed for %s", download_url)
             return {
