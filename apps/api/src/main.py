@@ -17,7 +17,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from .auth_routes import router as auth_router
 from .document_routes import router as document_router
 
-from logutil import get_logger, setup_logging, add_logging_middleware
+from logutil import get_logger, setup_logging
+from logutil.middleware import add_logging_middleware
 
 # Configure structured logging
 setup_logging()

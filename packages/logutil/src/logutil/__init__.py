@@ -8,7 +8,6 @@ import logging
 import sys
 
 from .config import LogConfig, get_log_config
-from .middleware import RequestLogMiddleware, RequestTimingMiddleware, add_logging_middleware
 
 # Re-export for convenience
 __all__ = [
@@ -16,9 +15,6 @@ __all__ = [
     "get_log_config",
     "get_logger",
     "setup_logging",
-    "RequestLogMiddleware",
-    "RequestTimingMiddleware",
-    "add_logging_middleware",
 ]
 
 # Module-level logger cache
@@ -49,7 +45,11 @@ def setup_logging(config: LogConfig | None = None) -> None:
             formatter = jsonlogger.JsonFormatter(
                 fmt="%(asctime)s %(name)s %(levelname)s %(message)s",
                 datefmt="%Y-%m-%dT%H:%M:%S%z",
-                rename_fields={"asctime": "timestamp", "name": "logger", "levelname": "level"},
+                rename_fields={
+                    "asctime": "timestamp",
+                    "name": "logger",
+                    "levelname": "level",
+                },
             )
             handler.setFormatter(formatter)
         except ImportError:
