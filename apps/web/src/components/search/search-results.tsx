@@ -12,8 +12,10 @@ import {
   Search,
   SearchX,
 } from "lucide-react";
-import type { DocumentSearchResult, DocumentStatus } from "@/lib/api/types";
+import { DocumentStatus } from "@/lib/api/types";
+import type { DocumentSearchResult } from "@/lib/api/types";
 import { Card, CardContent } from "@/components/ui/card";
+import { DownloadButton } from "@/components/search/download-button";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -197,6 +199,13 @@ function ResultCard({ result }: { result: DocumentSearchResult }) {
             <span className="uppercase">{result.file_type}</span>
           </div>
         </div>
+
+        {/* Download — disabled while the file is still being uploaded to R2 */}
+        <DownloadButton
+          documentId={result.id}
+          filename={result.filename}
+          disabled={result.status === DocumentStatus.UPLOADING}
+        />
       </CardContent>
     </Card>
   );
