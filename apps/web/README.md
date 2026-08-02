@@ -48,6 +48,25 @@ and must be configured as environment variables:
 Set them in `.env.local` (or the docker-compose environment). If either is
 missing, the upload flow fails with a clear error.
 
+### Upload states and troubleshooting
+
+The banner under the **Upload** button always reflects the true state of
+the operation:
+
+- **Green (success)** — the file is in R2 and processing has been
+  dispatched.
+- **Amber (partial)** — the file is in R2, but dispatching processing
+  failed after all automatic retries. The file is safe; press **Retry** to
+  dispatch processing again (safe: the backend refuses to double-process).
+- **Red (error)** — the upload itself failed. Common causes:
+  - Missing `NEXT_PUBLIC_ORGANIZATION_ID` / `NEXT_PUBLIC_USER_ID`.
+  - The API (`NEXT_PUBLIC_API_URL`) or R2 is unreachable.
+  - A PUT that takes longer than 5 minutes (the client-side timeout) or
+    longer than the presigned URL's validity (1 hour).
+
+All failure points are logged to the browser console with an `[upload]`
+prefix — filter on that string in devtools to trace a failed upload.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

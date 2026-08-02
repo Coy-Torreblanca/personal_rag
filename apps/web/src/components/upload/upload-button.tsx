@@ -57,10 +57,19 @@ export function UploadButton() {
   const isUploading = status.kind === "uploading";
 
   function openFilePicker() {
+    // Programmatically open the hidden <input type="file">. The input is
+    // `display: none`, so clicking it directly is the standard pattern.
     inputRef.current?.click();
   }
 
-  /** Retry just the processing dispatch for an already-uploaded file. */
+  /**
+   * Retry just the processing dispatch for an already-uploaded file.
+   *
+   * `processUploadedDocument` already retries transient failures internally,
+   * so this is the user-driven, last-resort retry for a permanently failed
+   * dispatch. Success moves the banner to `success`; a fresh failure keeps
+   * the banner in `partial` with an updated message.
+   */
   async function retryProcessing(
     partial: Extract<UploadStatus, { kind: "partial" }>,
   ) {
@@ -69,12 +78,23 @@ export function UploadButton() {
     const outcome = await processUploadedDocument(partial.jobId);
 
     if (outcome.error) {
+      console.error(
+        `[upload] Processing retry failed for job ${partial.jobId}: ${outcome.error}`,
+      );
       setStatus({ ...partial, retrying: false, message: outcome.error });
     } else {
+      console.debug(
+        `[upload] Processing retry succeeded for job ${partial.jobId}`,
+      );
       setStatus({ kind: "success", filename: partial.filename });
     }
   }
 
+  /**
+   * Entry point for a newly selected file: upload to R2, then dispatch
+   * processing. Every terminal state (success / partial / error) is
+   * surfaced through the status banners below.
+   */
   async function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     // Reset the input so selecting the same file again re-fires `change`.
@@ -97,6 +117,9 @@ export function UploadButton() {
       if (process.error) {
         // The file made it to R2 but processing didn't start — surface the
         // exact state instead of pretending the whole operation failed.
+        console.warn(
+          `[upload] "${file.name}" uploaded but processing failed to start: ${process.error}`,
+        );
         setStatus({
           kind: "partial",
           filename: file.name,
@@ -108,7 +131,11 @@ export function UploadButton() {
         setStatus({ kind: "success", filename: file.name });
       }
     } catch (err) {
-      setStatus({ kind: "error", message: toErrorMessage(err) });
+      // The upload itself failed — the error message is already shown in
+      // the banner, but log the full error for diagnostics.
+      const message = toErrorMessage(err);
+      console.error(`[upload] Upload failed for "${file.name}":`, err);
+      setStatus({ kind: "error", message });
     }
   }
 
@@ -142,9 +169,14 @@ export function UploadButton() {
         disabled={isUploading}
       />
 
-      {/* Status banners */}
+      {/* Status banners — role="status" + aria-live so screen readers
+          announce upload completion / failures without user interaction. */}
       {status.kind === "success" && (
-        <div className="flex w-full max-w-md items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:border-emerald-800/40 dark:bg-emerald-950/30 dark:text-emerald-400">
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex w-full max-w-md items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:border-emerald-800/40 dark:bg-emerald-950/30 dark:text-emerald-400"
+        >
           <Check className="size-3.5 shrink-0" />
           <span className="truncate">
             {status.filename} uploaded — processing started
@@ -162,14 +194,20 @@ export function UploadButton() {
 
       {/* Upload succeeded but processing dispatch failed — retryable */}
       {status.kind === "partial" && (
-        <div className="flex w-full max-w-md items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800/40 dark:bg-amber-950/30 dark:text-amber-400">
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex w-full max-w-md items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800/40 dark:bg-amber-950/30 dark:text-amber-400"
+        >
           {status.retrying ? (
             <Loader2 className="size-3.5 shrink-0 animate-spin" />
           ) : (
             <TriangleAlert className="size-3.5 shrink-0" />
           )}
+          {/* NB: JSX strips newlines adjacent to expressions, so the space
+              between the colon and the message must be explicit ({" "}). */}
           <span className="min-w-0">
-            {status.filename} uploaded, but processing didn&apos;t start:
+            {status.filename} uploaded, but processing didn&apos;t start:{" "}
             {status.message}
           </span>
           {!status.retrying && (
@@ -194,6 +232,8 @@ export function UploadButton() {
 
       {status.kind === "error" && (
         <div
+          role="status"
+          aria-live="polite"
           className={cn(
             "flex w-full max-w-md items-center gap-2 rounded-lg border border-red-200",
             "bg-red-50 px-3 py-2 text-xs text-red-700",
