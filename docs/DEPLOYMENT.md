@@ -13,5 +13,3 @@ From root project dir, run the following to spin up the containers (or redploy).
 podman-compose down
 podman-compose --env-file .env up -d --build  workers api
 ```
-
-

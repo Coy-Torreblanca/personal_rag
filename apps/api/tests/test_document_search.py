@@ -1,18 +1,29 @@
 """Tests for GET /api/documents/search — semantic document search.
 
+Two layers are covered:
+
+* route-level tests (the ``TestSearchDocuments`` class) that mock
+  ``query_documents`` at the router boundary;
+* unit tests for ``document_search._get_chunks`` (the ``TestGetChunks``
+  class) that mock the database session and exercise the vector-search /
+  neighbour-merge logic, including the PROCESSED-only document filter and
+  dangling-chunk handling.
+
 All external API calls (OpenAI embeddings, Cohere re-ranker, vector store)
 are mocked so that tests run without any cloud infrastructure.
 """
 
+import logging
 from datetime import datetime
-from uuid import UUID, uuid4
 from unittest.mock import MagicMock
+from uuid import UUID, uuid4
 
 import pytest
+from database.models import Document, DocumentChunk, DocumentStatus
 from httpx import AsyncClient
+from sqlmodel import Session as SQLModelSession
 
-from database.models import Document, DocumentStatus
-
+import src.document_search as document_search
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -399,3 +410,201 @@ class TestSearchDocuments:
         )
         assert resp.status_code == 200
         assert resp.json()[0]["status"] == status.value
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for document_search._get_chunks
+# ---------------------------------------------------------------------------
+
+
+class TestGetChunks:
+    """Unit tests for ``document_search._get_chunks`` with a mocked session.
+
+    ``_get_chunks`` obtains its session via ``contextmanager(get_db)()``
+    where ``get_db`` is the module-level import from ``database.session``.
+    Tests monkeypatch ``document_search.get_db`` with a plain generator
+    function (NOT a ``@contextmanager``-decorated one, which would be
+    double-wrapped) yielding a ``MagicMock`` session whose ``exec`` returns
+    the three result sets in call order:
+
+    1. initial vector-search chunks,
+    2. parent documents (already filtered to ``PROCESSED`` by the query),
+    3. neighbour chunks.
+    """
+
+    LOGGER_NAME = "src.document_search"
+
+    @staticmethod
+    def _make_chunk(doc_id: UUID, index: int, content: str) -> DocumentChunk:
+        """Build a ``DocumentChunk`` with the minimum required fields."""
+        return DocumentChunk(
+            document_id=doc_id,
+            organization_id=uuid4(),
+            chunk_index=index,
+            content=content,
+        )
+
+    @staticmethod
+    def _fake_get_db(session: MagicMock):
+        """Generator-function stand-in for ``database.session.get_db``."""
+
+        def _gen():
+            yield session
+
+        return _gen
+
+    def _run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        session: MagicMock,
+        vector: list[float] | None = None,
+    ) -> list[dict]:
+        """Patch ``get_db`` and invoke ``_get_chunks``."""
+        monkeypatch.setattr(document_search, "get_db", self._fake_get_db(session))
+        return document_search._get_chunks(vector or [0.1] * 8)
+
+    def _new_session(self, *results: list) -> MagicMock:
+        """Session whose ``exec`` returns each result set in call order.
+
+        ``db.exec(...)`` returns a result object with an ``.all()`` method
+        (mirroring ``sqlmodel.Session.exec``), so each entry is wrapped in
+        a mock exposing ``all()``.
+        """
+        session = MagicMock(spec=SQLModelSession)
+        exec_results = []
+        for rows in results:
+            result = MagicMock()
+            result.all.return_value = rows
+            exec_results.append(result)
+        session.exec.side_effect = exec_results
+        return session
+
+    # ── Happy path ──────────────────────────────────────────────────────
+
+    def test_returns_merged_chunks_for_processed_document(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Neighbours are merged (prepend/append) into their parent chunk."""
+        doc = make_document(status=DocumentStatus.PROCESSED)
+        initial = [
+            self._make_chunk(doc.id, 0, "A"),
+            self._make_chunk(doc.id, 5, "E"),
+        ]
+        aux = [
+            self._make_chunk(doc.id, 1, "B"),   # successor of chunk 0
+            self._make_chunk(doc.id, 4, "D"),   # predecessor of chunk 5
+            self._make_chunk(doc.id, 6, "F"),   # successor of chunk 5
+        ]
+        session = self._new_session(initial, [doc], aux)
+
+        with caplog.at_level(logging.INFO, logger=self.LOGGER_NAME):
+            result = self._run(monkeypatch, session)
+
+        # Order follows the initial vector-search ranking.
+        assert len(result) == 2
+        assert result[0]["document"].id == doc.id
+        assert result[0]["chunk_content"] == "AB"
+        assert result[1]["chunk_content"] == "DEF"
+
+        # Vector search → document fetch → neighbour fetch.
+        assert session.exec.call_count == 3
+
+        # The doc-fetch query must have filtered on PROCESSED status.
+        doc_stmt = session.exec.call_args_list[1].args[0]
+        assert "status" in str(doc_stmt)
+
+    # ── Dangling chunks (missing / non-PROCESSED parents) ───────────────
+
+    def test_skips_dangling_chunks_and_logs_warning(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Chunks of non-PROCESSED documents are dropped with a warning, and
+        their neighbours are excluded from the aux-chunk query."""
+        good_doc = make_document(status=DocumentStatus.PROCESSED)
+        bad_doc = make_document(status=DocumentStatus.ERROR)
+        initial = [
+            self._make_chunk(good_doc.id, 0, "A"),
+            self._make_chunk(bad_doc.id, 0, "X"),
+        ]
+        # The DB query only returns PROCESSED documents — exactly what the
+        # real ``select(Document).where(status == PROCESSED)`` would return.
+        aux = [self._make_chunk(good_doc.id, 1, "B")]
+        session = self._new_session(initial, [good_doc], aux)
+
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            result = self._run(monkeypatch, session)
+
+        assert len(result) == 1
+        assert result[0]["chunk_content"] == "AB"
+
+        # A warning must have been emitted for the dangling chunk.
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any(str(bad_doc.id) in w.getMessage() for w in warnings)
+
+        # The aux-chunk query must not reference the dangling document.
+        aux_stmt = session.exec.call_args_list[2].args[0]
+        pairs = next(iter(aux_stmt.compile().params.values()))
+        assert all(doc_id != bad_doc.id for doc_id, _ in pairs)
+        assert all(doc_id == good_doc.id for doc_id, _ in pairs)
+
+    def test_returns_empty_when_all_chunks_dangle(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When no parent document is PROCESSED the result is empty and the
+        neighbour fetch is skipped entirely (no wasted DB round-trip)."""
+        ghost_doc = make_document(status=DocumentStatus.UPLOADED)
+        initial = [self._make_chunk(ghost_doc.id, 0, "A")]
+        session = self._new_session(initial, [])
+
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            result = self._run(monkeypatch, session)
+
+        assert result == []
+        # Only the vector search and the document fetch ran.
+        assert session.exec.call_count == 2
+        assert any("dangling" in r.getMessage() for r in caplog.records)
+
+    def test_returns_empty_when_no_initial_chunks(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """No vector hits → empty result, single DB query."""
+        session = self._new_session([])
+
+        with caplog.at_level(logging.INFO, logger=self.LOGGER_NAME):
+            result = self._run(monkeypatch, session)
+
+        assert result == []
+        assert session.exec.call_count == 1
+
+    # ── Neighbour edge cases ────────────────────────────────────────────
+
+    def test_single_chunk_without_neighbours_is_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A lone chunk with no adjacent chunks keeps its raw content."""
+        doc = make_document(status=DocumentStatus.PROCESSED)
+        initial = [self._make_chunk(doc.id, 0, "solo")]
+        session = self._new_session(initial, [doc], [])
+
+        result = self._run(monkeypatch, session)
+
+        assert len(result) == 1
+        assert result[0]["chunk_content"] == "solo"
+
+    def test_shared_neighbour_merged_into_both_parents(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A neighbour between two initial chunks (indexes 0 and 2) is
+        merged into *both* parents — the known duplication edge case
+        documented in ``_get_chunks``."""
+        doc = make_document(status=DocumentStatus.PROCESSED)
+        initial = [
+            self._make_chunk(doc.id, 0, "0"),
+            self._make_chunk(doc.id, 2, "2"),
+        ]
+        aux = [self._make_chunk(doc.id, 1, "1")]
+        session = self._new_session(initial, [doc], aux)
+
+        result = self._run(monkeypatch, session)
+
+        assert [r["chunk_content"] for r in result] == ["01", "12"]

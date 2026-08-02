@@ -1,15 +1,15 @@
 import os
-import openai
-import cohere
-from uuid import UUID
 from collections.abc import Sequence
-from typing import Any, TypedDict, cast
 from contextlib import contextmanager
-from sqlmodel import select, tuple_
+from typing import Any, TypedDict, cast
+from uuid import UUID
 
-from logutil import get_logger
-from database.models import Document, DocumentChunk
+import cohere
+import openai
+from database.models import Document, DocumentChunk, DocumentStatus
 from database.session import get_db
+from logutil import get_logger
+from sqlmodel import select, tuple_
 
 logger = get_logger(__name__)
 
@@ -148,6 +148,12 @@ def _get_chunks(
     initial chunk so that the downstream re-ranker sees a wider window of
     context around each hit.
 
+    Only chunks whose parent ``Document`` has status ``PROCESSED`` are
+    returned; chunks referencing missing, unprocessed, errored, or stale
+    documents ("dangling chunks") are dropped with a warning.  This means
+    the returned list may contain fewer than 5 entries, or be empty even
+    when the vector store has hits.
+
     Parameters
     ----------
     vector : list[float]
@@ -180,19 +186,69 @@ def _get_chunks(
 
         # 2. Pre-fetch documents for all initial chunks so that we don't
         #    need a second DB round-trip later in ``query_documents``.
+        #
+        #    We only load documents whose status is ``PROCESSED``: chunks are
+        #    written while a document is still ``PROCESSING`` (see
+        #    ``generate_embeddings.upload_embeddings``), and only after the
+        #    full pipeline completes is the status flipped to ``PROCESSED``.
+        #    Serving search results from partially-processed documents would
+        #    leak incomplete or superseded content, so anything else —
+        #    ``UPLOADING``, ``PROCESSING``, ``ERROR``, ``STALE``, or a
+        #    document that was deleted outright — is excluded here.  The
+        #    trade-off is a short visibility window (chunks written, status
+        #    not yet flipped) which is preferable to serving stale data.
+        #
+        #    NOTE: this also acts as the *only* guard against dangling
+        #    chunks: a chunk whose parent document is gone (e.g. deleted
+        #    after a re-upload) will never match this query and is filtered
+        #    out in step 3 below.
         doc_ids = {c.document_id for c in initial_chunks}
+        logger.debug(
+            "Searching for parent documents (PROCESSED only): ids=%s",
+            sorted(map(str, doc_ids)),
+        )
         id_col = cast(Any, Document.id)
         doc_map = {
-            d.id: d for d in db.exec(select(Document).where(id_col.in_(doc_ids))).all()
+            d.id: d
+            for d in db.exec(
+                select(Document).where(
+                    id_col.in_(doc_ids), Document.status == DocumentStatus.PROCESSED
+                )
+            ).all()
         }
-        logger.debug("Pre-fetched %d documents for chunk parents", len(doc_map))
+        logger.info(
+            "Pre-fetched %d/%d parent documents (PROCESSED only)",
+            len(doc_map),
+            len(doc_ids),
+        )
 
         # 3. Build a map of ``(doc_id, chunk_index) -> ParentChunk`` and
         #    collect the neighbour positions we need to fetch.
+        #
+        #    A chunk whose parent document is not in ``doc_map`` is a
+        #    *dangling chunk*: the document is either not ``PROCESSED`` yet
+        #    or has been deleted (leaving orphaned rows behind).  Such chunks
+        #    must never surface in search results, so we skip them entirely
+        #    — including their neighbours, which keeps the aux-chunk query
+        #    below free of dead documents.
         target_pairs: list[tuple[UUID, int]] = []
         initial_chunk_map: dict[tuple[UUID, int], ParentChunk] = {}
 
         for chunk in initial_chunks:
+            if chunk.document_id not in doc_map:
+                # Data-integrity signal: the vector store still references a
+                # document that is missing or not fully processed.  Log it
+                # (rather than failing the whole search) so that orphaned
+                # chunks can be detected and cleaned up.
+                logger.warning(
+                    "Dropping dangling chunk: chunk_id=%s index=%d "
+                    "document_id=%s (parent missing or not PROCESSED)",
+                    chunk.id,
+                    chunk.chunk_index,
+                    chunk.document_id,
+                )
+                continue
+
             # Request the immediate predecessor and successor
             target_pairs.append((chunk.document_id, chunk.chunk_index - 1))
             target_pairs.append((chunk.document_id, chunk.chunk_index + 1))
@@ -200,6 +256,15 @@ def _get_chunks(
                 "document": doc_map[chunk.document_id],
                 "chunk_content": chunk.content,
             }
+
+        # Every initial chunk was dangling — nothing left to search for.
+        # Short-circuit so we don't waste a DB round-trip on neighbours.
+        if not initial_chunk_map:
+            logger.warning(
+                "All %d initial chunks are dangling; returning empty result",
+                len(initial_chunks),
+            )
+            return []
 
         # 4. Fetch neighbour chunks in the same session
         aux_chunks = db.exec(
@@ -292,9 +357,21 @@ def query_documents(query: str) -> list[QueryDocumentResult]:
 
 
 if __name__ == "__main__":
+    # Manual smoke test — runs the full retrieval pipeline for a fixed query.
+    # Requires OPENAI_API_KEY, COHERE_API_KEY and a reachable DATABASE_URL.
+    import json
+
     print(
-        [
-            {"key": doc["document"].s3_key, "relevance": doc["relevance"]}
-            for doc in query_documents("money")
-        ]
+        json.dumps(
+            [
+                {
+                    "document_id": str(result["document"].id),
+                    "filename": result["document"].filename,
+                    "s3_key": result["document"].s3_key,
+                    "relevance": result["relevance"],
+                }
+                for result in query_documents("money")
+            ],
+            indent=2,
+        )
     )

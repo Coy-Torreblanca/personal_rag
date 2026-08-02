@@ -23,7 +23,7 @@ dependencies = [
     "clerk-sdk>=0.1.0",
     "s3",
     "database",
-    "logutil",
+    "logutil[fastapi]",
     "modal>=1.4.3",
     "cohere>=7.0.8",
     "openai>=2.24.0",

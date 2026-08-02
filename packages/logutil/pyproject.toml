@@ -6,10 +6,43 @@ authors = [
     {name = "30ai Team", email = "team@30ai.com"},
 ]
 dependencies = [
-    "fastapi>=0.140.0",
     "python-json-logger>=2.0.0",
 ]
 requires-python = ">=3.11"
+
+[project.optional-dependencies]
+# Only needed by services that register the request middleware on a FastAPI app.
+fastapi = [
+    "fastapi>=0.140.0",
+]
+
+[dependency-groups]
+# Tooling for running the package's own test suite (``uv run pytest``).
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.21.0",
+    "httpx>=0.25.0",
+    "starlette>=0.46.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+select = ["E", "W", "F", "I", "B", "C4", "UP"]
+ignore = ["E501", "B008"]
+
+[tool.hatch.build.targets.wheel]
+# Explicit src-layout package (hatchling would auto-detect this too, but
+# being explicit avoids ambiguity with other directories under ``src/``).
+packages = ["src/logutil"]
 
 [build-system]
 requires = ["hatchling"]
