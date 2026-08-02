@@ -42,7 +42,7 @@ uv run pytest tests/test_generate_embeddings.py -v
 uv run pytest tests/test_main.py::TestFailJob -v
 ```
 
-All tests are in `tests/`.  **32 tests**, all pass.
+All tests are in `tests/`.  **54 tests**, all pass.
 
 ---
 
@@ -139,6 +139,34 @@ with patch.dict("sys.modules", {"httpx": MagicMock()}):
 
 The `DocumentChunk.embedding` column is defined as `Vector(1536)`.  Tests that
 write embeddings to a real or mocked DB session must use lists of length 1536.
+
+### 7. `src.main.generate_embeddings` is a wrapper — patch `_generate_embeddings`
+
+`src.main.generate_embeddings` is an **orchestration wrapper** (presigned-URL
+generation + delegation) around the imported embedding pipeline, which is
+aliased as `_generate_embeddings` at module level:
+
+```python
+from .generate_embeddings import generate_embeddings as _generate_embeddings
+```
+
+Tests that exercise `process_document` or the wrapper must patch
+**`src.main._generate_embeddings`** (the imported pipeline) so the wrapper still
+runs and the R2 presigned-URL logic is exercised:
+
+```python
+# ✅ Correct — stubs the pipeline, keeps the wrapper (URL generation) live
+with patch("src.main._generate_embeddings") as mock_embeddings:
+    ...
+
+# ❌ Wrong — stubs the wrapper itself; presigned-URL assertions will fail
+with patch("src.main.generate_embeddings"):
+    ...
+```
+
+Similarly, `parse_document` (the helper) only calls
+`modal.Cls.from_name(...)` for **non-text** files, so tests for the TXT bypass
+path must assert `mock_modal_cls.assert_not_called()`.
 
 ---
 

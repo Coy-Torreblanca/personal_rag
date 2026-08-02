@@ -7,7 +7,6 @@ This module defines Celery tasks for document processing, including:
   generates embeddings, and updates job/document status in the database.
 """
 
-import logging
 import os
 import modal
 from contextlib import contextmanager
@@ -15,7 +14,7 @@ from celery import Celery
 
 
 from .parse_document import APP_NAME
-from .generate_embeddings import generate_embeddings
+from .generate_embeddings import generate_embeddings as _generate_embeddings
 from database.models import Document, DocumentStatus, ProcessingJob, ProcessingJobStatus
 from database.session import get_db
 from s3.client import R2Client
@@ -106,6 +105,175 @@ def _fail_job(document_id: str, job_id: str) -> None:
             logger.error("Failed to mark job/document as failed", exc_info=ee)
 
 
+def parse_document(
+    s3_key: str,
+    document_id: str,
+    upload_url: str,
+    download_url: str,
+    is_text_file: bool,
+) -> dict[str, str | int]:
+    """Parse a document into markdown, either locally or via Modal/Docling.
+
+    Plain-text files (``.txt``, ``.md``, ...) are already markdown-compatible,
+    so they skip the Modal/Docling parser entirely — no remote class lookup,
+    no network round-trip. Every other file type is handed to the
+    Modal-hosted ``DoclingParser``, which downloads the original document from
+    ``download_url``, converts it to markdown, and uploads the result to
+    ``upload_url`` as ``<s3_key>.md``.
+
+    Args:
+        s3_key: Original object key in the bucket (used for logging only).
+        document_id: UUID string of the document being parsed.
+        upload_url: Presigned S3 URL where Docling uploads the markdown result.
+        download_url: Presigned S3 URL from which Docling downloads the source.
+        is_text_file: Whether the object is a plain-text file.
+
+    Returns:
+        A normalized dict with ``status`` (``"success"``) and ``pages`` (int).
+
+    Raises:
+        ValueError: If the Docling parser returns an error status or an
+            unexpected (non-dict / missing-status) response.
+    """
+    # Plain-text files are already markdown-compatible: nothing to convert.
+    # Returning early also avoids a pointless Modal class lookup, which can
+    # itself fail if the Modal app is unreachable.
+    if is_text_file:
+        logger.info(
+            "Skipping docling processing on file %r because it is a text file.",
+            s3_key,
+        )
+        return {"status": "success", "pages": 1}
+
+    # TODO Make Async and have modal make fast api call to continue processing.
+    m_cls = modal.Cls.from_name(APP_NAME, "DoclingParser")
+
+    logger.info(
+        "Submitting document %s to Docling for conversion (%s).",
+        document_id,
+        s3_key,
+    )
+    result = m_cls().process_document.remote(download_url, upload_url)
+
+    # Defensive validation: Docling is expected to return
+    # ``{"status": "success" | "error", ...}``. Treat any other payload
+    # (non-dict, missing status, unexpected status) as a hard failure so the
+    # job is failed loudly instead of crashing on a ``KeyError`` downstream.
+    if not isinstance(result, dict) or result.get("status") != "success":
+        error_message = (
+            result.get("message", "unknown Docling error")
+            if isinstance(result, dict)
+            else f"unexpected Docling response: {result!r}"
+        )
+        logger.error(
+            "Docling parsing error for document %s: %s",
+            document_id,
+            error_message,
+        )
+        raise ValueError(f"Error in parsing document in Docling: {error_message}")
+
+    # Normalize the success payload; ``pages`` may arrive as a string or int.
+    pages = int(result.get("pages", 1))
+    logger.info(
+        "Docling conversion succeeded for document %s (%s pages).",
+        document_id,
+        pages,
+    )
+    return {"status": "success", "pages": pages}
+
+
+def generate_embeddings(
+    s3_key: str,
+    is_text_file: bool,
+    organization_id: str,
+    document_id: str,
+) -> None:
+    """Generate and persist embeddings for a processed document.
+
+    This is a thin orchestration wrapper around
+    :func:`src.generate_embeddings.generate_embeddings` (imported as
+    ``_generate_embeddings`` to avoid shadowing this wrapper):
+
+    1. Resolve the markdown object key — the original object for plain-text
+       files, ``<s3_key>.md`` for Docling-converted files.
+    2. Generate a short-lived presigned GET URL for that object.
+    3. Delegate download → chunk → embed → persist to the embedding pipeline.
+
+    Args:
+        s3_key: Original object key in the bucket.
+        is_text_file: Whether the object is a plain-text file.
+        organization_id: UUID string of the owning organization.
+        document_id: UUID string of the document being processed.
+
+    Raises:
+        KeyError: If the ``BUCKET_NAME`` environment variable is not set.
+        PresignedUrlError: If the presigned URL cannot be generated.
+    """
+    logger.info("Generating embeddings for document %s", document_id)
+
+    # TODO Add expiration logic (e.g. derive from document size).
+    expiration = 3600
+
+    # Text files are already markdown and are downloaded as-is; files
+    # converted by Docling are downloaded as ``<original>.md``.
+    output_key = download_key(s3_key, is_text_file)
+
+    client = R2Client(bucket_name=os.environ["BUCKET_NAME"])
+    response = client.generate_presigned_url(
+        key=output_key,
+        expiration=expiration,
+        method="GET",
+        inline=False,
+    )
+    logger.info("Generated presigned GET URL for %r", output_key)
+
+    # NOTE: presigned URLs carry credentials — log only the object key, never
+    # the URL itself.
+    _generate_embeddings(response.url, document_id, organization_id)
+
+    logger.info("Finished generating embeddings for document %s", document_id)
+
+
+def mark_job_and_document_as_processed(document_id: str, job_id: str) -> None:
+    """Mark a document and its processing job as successfully processed.
+
+    Sets the document status to PROCESSED and the processing job status to
+    COMPLETED, then commits. Rows that no longer exist are skipped safely.
+
+    Args:
+        document_id: UUID string of the document to mark as processed.
+        job_id: UUID string of the processing job to mark as completed.
+
+    Raises:
+        Exception: Re-raised (after rollback) if the transaction fails, so the
+            caller can run failure handling (``_fail_job``).
+    """
+    with contextmanager(get_db)() as db:
+        try:
+            doc = db.get(Document, document_id)
+            if doc:
+                doc.status = DocumentStatus.PROCESSED
+
+            job = db.get(ProcessingJob, job_id)
+            if job:
+                job.status = ProcessingJobStatus.COMPLETED
+
+            db.commit()
+            logger.info(
+                "Marked document %s and job %s as processed/completed.",
+                document_id,
+                job_id,
+            )
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Failed to mark document %s / job %s as processed.",
+                document_id,
+                job_id,
+            )
+            raise
+
+
 @celery.task(name="process_document", bind=True)
 def process_document(
     self,
@@ -144,88 +312,45 @@ def process_document(
             failed and the exception is re-raised.
     """
     job_id: str = self.request.id
+    logger.info("Processing document %s (job %s)", document_id, job_id)
+
+    # Plain-text files are served directly; every other type is sent to
+    # Docling, which uploads the converted result as ``<s3_key>.md``.
+    is_text_file = is_plain_text_file(s3_key)
 
     try:
-        # TODO Make Async and have modal make fast api call to continue processing.
-        m_cls = modal.Cls.from_name(APP_NAME, "DoclingParser")
-
-        # Plain-text files are served directly; every other type is sent to
-        # Docling, which uploads the converted result as ``<s3_key>.md``.
-        is_text_file = is_plain_text_file(s3_key)
-
-        if not is_text_file:
-            logger.info(
-                "Submitting document %s to Docling for conversion (%s).",
-                document_id,
-                s3_key,
-            )
-            result = m_cls().process_document.remote(download_url, upload_url)
-
-            if result["status"] == "error":
-                error_message = result.get("message", "unknown Docling error")
-                logger.error(
-                    "Docling parsing error for document %s: %s",
-                    document_id,
-                    error_message,
-                )
-                raise ValueError(
-                    f"Error in parsing document in Docling: {error_message}"
-                )
-
-            logger.info(
-                "Docling conversion succeeded for document %s (%s pages).",
-                document_id,
-                result.get("pages", 1),
-            )
-        else:
-            logger.info(
-                "Skipping docling processing on file %r because it is a text file.",
-                s3_key,
-            )
-            result = {"status": "success", "pages": 1}
-
-        client = R2Client(bucket_name=os.environ["BUCKET_NAME"])
-
-        # TODO Add expiration logic.
-        expiration = 3600
-
-        # Text files are already markdown and are downloaded as-is; files
-        # converted by Docling are downloaded as ``<original>.md``.
-        output_key = download_key(s3_key, is_text_file)
-
-        response = client.generate_presigned_url(
-            key=output_key,
-            expiration=expiration,
-            method="GET",
-            inline=False,
+        # Stage 1 — parse the document into markdown (Modal/Docling or
+        # pass-through for plain-text files).
+        result = parse_document(
+            s3_key=s3_key,
+            document_id=document_id,
+            upload_url=upload_url,
+            download_url=download_url,
+            is_text_file=is_text_file,
         )
-        logger.info("Generated presigned GET URL for %r", output_key)
 
-        generate_embeddings(response.url, document_id, organization_id)
+        # Stage 2 — generate embeddings from the resulting markdown and
+        # persist them to the database.
+        generate_embeddings(
+            s3_key=s3_key,
+            is_text_file=is_text_file,
+            organization_id=organization_id,
+            document_id=document_id,
+        )
 
-        with contextmanager(get_db)() as db:
-            try:
-                doc = db.get(Document, document_id)
-                if doc:
-                    doc.status = DocumentStatus.PROCESSED
-                job = db.get(ProcessingJob, job_id)
-                if job:
-                    job.status = ProcessingJobStatus.COMPLETED
+        # Stage 3 — persist the successful outcome on the document/job rows.
+        mark_job_and_document_as_processed(document_id, job_id)
 
-                db.commit()
-
-            except Exception:
-                db.rollback()
-                raise
-
-    except Exception as e:
+    except Exception:
         logger.exception(
             "Document processing failed for document=%s job=%s",
             document_id,
             job_id,
         )
         _fail_job(document_id, job_id)
-        raise e
+        # Bare ``raise`` preserves the original traceback for Celery/error
+        # reporting (``raise e`` would truncate it).
+        raise
 
     return result
 
