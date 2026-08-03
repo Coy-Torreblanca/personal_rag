@@ -175,7 +175,7 @@ def _get_chunks(
         initial_chunks = db.exec(
             select(DocumentChunk)
             .order_by(embedding_col.cosine_distance(vector))
-            .limit(5)
+            .limit(30)
         ).all()
 
         logger.debug("Vector search: initial_chunks=%d", len(initial_chunks))
