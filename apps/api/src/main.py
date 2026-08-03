@@ -11,6 +11,8 @@ Environment variables expected:
 - BUCKET_NAME: S3/R2 bucket name for document storage
 """
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -36,9 +38,17 @@ app = FastAPI(
 # CORS
 # ---------------------------------------------------------------------------
 # Restrict origins in production; wildcards allowed here for local development.
+# Read allowed origins from CORS_ALLOWED_ORIGINS (comma-separated).
+# Defaults to the local frontend dev server origin.
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Frontend dev server
+    allow_origins=allowed_origins,  # Frontend origin(s)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

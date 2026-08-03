@@ -81,6 +81,7 @@ services:
       - BUCKET_NAME=${BUCKET_NAME}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - COHERE_API_KEY=${COHERE_API_KEY}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
     ports:
       - "8000:8000"
     depends_on:
@@ -99,7 +100,7 @@ services:
       dockerfile: Dockerfile
     container_name: 30ai-web
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
       - NEXT_PUBLIC_ENVIRONMENT=development
       - NEXT_PUBLIC_ORGANIZATION_ID=70885aed-0503-4656-bb72-368a26758575
       - NEXT_PUBLIC_USER_ID=c06ed70c-b7bd-45a4-d0d7-0a978d44d956
