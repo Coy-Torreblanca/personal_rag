@@ -47,6 +47,7 @@ venv.bak/
 .env.test.local
 .env.production.local
 .env.staging.local
+.env.prod
 .env.*.local
 !.env.example
 

@@ -1,0 +1,36 @@
+# ============================================================
+# Dev overrides — automatically merged when you run:
+#   podman-compose up -d --build
+#
+# Never pass this file with -f for production; the prod command
+# only loads docker-compose.yml + docker-compose.prod.yml.
+# ============================================================
+
+services:
+  postgres:
+    ports:
+      - "${DB_PORT:-5432}:5432"
+
+  redis:
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+
+  workers:
+    environment:
+      ENVIRONMENT: development
+    volumes:
+      - ./apps/workers:/app
+      - ./packages:/packages
+
+  api:
+    environment:
+      ENVIRONMENT: development
+
+  web:
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      NEXT_PUBLIC_ENVIRONMENT: development
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+    volumes:
+      - ./apps/web:/app
+      - /app/node_modules
