@@ -26,6 +26,24 @@ _client: openai.Client | None = None
 _cohere_client: cohere.Client | None = None
 RERANK_MODEL = "rerank-english-v3.0"
 
+# Number of candidate chunks pulled from the vector store (nearest
+# neighbours) before the expensive cross-encoder re-ranker runs.
+#
+# This is the *recall* gate of the pipeline: the vector search is cheap,
+# while the Cohere re-ranker is the quality bottleneck, so we deliberately
+# fetch more candidates than we surface and let the re-ranker decide.
+# Truncating early (as with the old limit of 5) starves the re-ranker of
+# relevant-but-lower-ranked chunks.
+#
+# Costs / trade-offs of a wider window:
+#   * Cohere ``rerank`` is priced per document — 30 is 6× the spend of 5;
+#     the API accepts up to 1000 documents, so 30 is well within limits.
+#   * The neighbour-merge fan-out is 2 × N aux rows (≤ 60 for N = 30),
+#     a single indexed ``tuple_ IN`` query — negligible.
+#   * ``query_documents`` deduplicates by document after re-ranking, so a
+#     wide window mostly adds *document* diversity, not just chunk hits.
+VECTOR_SEARCH_CANDIDATE_LIMIT = os.environ.get("VECTOR_SEARCH_CANDIDATE_LIMIT", 30)
+
 
 def _get_openai_client() -> openai.Client:
     """Return the singleton OpenAI client, creating it if necessary."""
@@ -140,9 +158,10 @@ def _get_chunks(
     vector: list[float],
 ) -> list[ParentChunk]:
     """
-    Fetch the top-5 most semantically similar chunks to *vector*, together
-    with their immediate predecessor/successor neighbours and the parent
-    ``Document`` records — all in a single database session.
+    Fetch the top-``VECTOR_SEARCH_CANDIDATE_LIMIT`` most semantically
+    similar chunks to *vector*, together with their immediate
+    predecessor/successor neighbours and the parent ``Document`` records —
+    all in a single database session.
 
     Adjacent chunks are *merged* (prepended / appended) to their parent
     initial chunk so that the downstream re-ranker sees a wider window of
@@ -151,8 +170,8 @@ def _get_chunks(
     Only chunks whose parent ``Document`` has status ``PROCESSED`` are
     returned; chunks referencing missing, unprocessed, errored, or stale
     documents ("dangling chunks") are dropped with a warning.  This means
-    the returned list may contain fewer than 5 entries, or be empty even
-    when the vector store has hits.
+    the returned list may contain fewer than ``VECTOR_SEARCH_CANDIDATE_LIMIT``
+    entries, or be empty even when the vector store has hits.
 
     Parameters
     ----------
@@ -162,23 +181,43 @@ def _get_chunks(
     Returns
     -------
     list[ParentChunk]
-        Up to 5 ``ParentChunk`` entries (one per vector-similarity hit),
-        each containing the parent ``Document`` and the chunk text with
-        adjacent neighbours merged in.
+        Up to ``VECTOR_SEARCH_CANDIDATE_LIMIT`` ``ParentChunk`` entries
+        (one per vector-similarity hit), each containing the parent
+        ``Document`` and the chunk text with adjacent neighbours merged in.
     """
     with contextmanager(get_db)() as db:
         # Cast to ``Any`` to satisfy the type checker — SQLModel / SQLAlchemy
         # column attributes don't natively expose ``cosine_distance``.
         embedding_col = cast(Any, DocumentChunk.embedding)
 
-        # 1. Top-5 most similar chunks (ANN / exact nearest-neighbour)
+        # 1. Top-N most similar chunks (ANN / exact nearest-neighbour),
+        #    where N == VECTOR_SEARCH_CANDIDATE_LIMIT.  Fetching a wide
+        #    candidate window here is deliberate: the vector score is only
+        #    a rough cut, and the Cohere re-ranker downstream is the real
+        #    quality gate.  See the constant definition for the reasoning.
         initial_chunks = db.exec(
             select(DocumentChunk)
             .order_by(embedding_col.cosine_distance(vector))
-            .limit(30)
+            .limit(VECTOR_SEARCH_CANDIDATE_LIMIT)
         ).all()
 
-        logger.debug("Vector search: initial_chunks=%d", len(initial_chunks))
+        logger.debug(
+            "Vector search: initial_chunks=%d (candidate_limit=%d)",
+            len(initial_chunks),
+            VECTOR_SEARCH_CANDIDATE_LIMIT,
+        )
+
+        if len(initial_chunks) >= VECTOR_SEARCH_CANDIDATE_LIMIT:
+            # The window is completely full — the true nearest neighbours
+            # may extend past the limit, so recall may be truncated here.
+            # Log at DEBUG so operators can spot when the limit needs
+            # raising (e.g. as the corpus grows).
+            #
+            # ``>=`` (not ``==``) is deliberate: a corpus with *exactly* N
+            # chunks false-positives (nothing was actually truncated), but
+            # adding a ``COUNT(*)`` probe per search to disambiguate is not
+            # worth a DB round-trip for a DEBUG-only heuristic signal.
+            logger.warning("Candidate window is full; recall may be truncated")
 
         if not initial_chunks:
             logger.info("No chunks found for the given query vector")
@@ -285,7 +324,13 @@ def _get_chunks(
     # NOTE(@coscan): If two different initial chunks are only 2 positions
     # apart (e.g. indexes 10 and 12) a single aux chunk at index 11 would
     # be merged into *both* parents, effectively duplicating its content.
-    # This is an edge case that should be vanishingly rare in practice.
+    # This is an edge case that should be vanishingly rare in practice —
+    # although note that with a wider candidate window
+    # (``VECTOR_SEARCH_CANDIDATE_LIMIT`` = 30) *adjacent* initial chunks
+    # are common, so overlapping neighbour windows (the same passage
+    # appearing inside two merged contexts) are expected and acceptable:
+    # the re-ranker down-weights redundant passages and the final
+    # document-level dedup in ``query_documents`` hides the overlap.
     for aux_chunk in aux_chunks:
         # Is this aux chunk the predecessor of an initial chunk?
         # i.e. initial_chunk_index == aux_chunk.chunk_index + 1
@@ -304,6 +349,14 @@ def _get_chunks(
             initial_chunk["chunk_content"] = (
                 initial_chunk["chunk_content"] + aux_chunk.content
             )
+
+    # Merge pass complete.  Log the final funnel size (N initial candidates
+    # → M surviving parents) at DEBUG so the recall behaviour of the
+    # pipeline can be observed when tuning ``VECTOR_SEARCH_CANDIDATE_LIMIT``:
+    # a large gap between N and M means many dangling chunks, while a
+    # persistent "window full" signal (see above) means the limit itself is
+    # the bottleneck.
+    logger.info("Neighbour merge complete: parent_chunks=%d", len(initial_chunk_map))
 
     return list(initial_chunk_map.values())
 

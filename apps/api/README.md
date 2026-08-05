@@ -54,7 +54,10 @@ curl -G "http://localhost:8000/api/documents/search" \
 
 The search pipeline:
 1. Embeds the query using OpenAI ``text-embedding-3-small``.
-2. Retrieves the top-5 most similar chunks from the vector store.
+2. Retrieves the top-``VECTOR_SEARCH_CANDIDATE_LIMIT`` (currently 30)
+   most similar chunks from the vector store, merging each hit with its
+   immediate neighbours. The candidate count is a tunable constant in
+   ``src/document_search.py``.
 3. Re-ranks results using Cohere's ``rerank-english-v3.0`` cross-encoder.
 4. Deduplicates by document and returns results sorted by descending relevance.
 

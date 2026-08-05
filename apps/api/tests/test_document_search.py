@@ -576,6 +576,99 @@ class TestGetChunks:
         assert result == []
         assert session.exec.call_count == 1
 
+    # ── Candidate window (VECTOR_SEARCH_CANDIDATE_LIMIT) ────────────────
+
+    def test_vector_search_uses_candidate_limit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The vector-search query caps results at the candidate limit.
+
+        Regression guard for the top-5 → top-30 widening: the LIMIT in the
+        generated SQL must track ``VECTOR_SEARCH_CANDIDATE_LIMIT`` (and
+        that constant must stay at 30 until deliberately changed).
+        """
+        assert document_search.VECTOR_SEARCH_CANDIDATE_LIMIT == 30
+        session = self._new_session([])
+        self._run(monkeypatch, session)
+
+        # First exec call is the vector search. The pgvector dialect
+        # compiles ``.limit(N)`` as a bound parameter (e.g. ``:param_1``)
+        # rather than inlining it, so assert both that a LIMIT clause is
+        # present *and* that the constant is among the bound params.  (The
+        # param name is dialect-generated and unstable, so we avoid
+        # hardcoding it; the membership check is unambiguous here because
+        # the only other bound param is the query vector itself.)
+        vec_stmt = session.exec.call_args_list[0].args[0]
+        compiled = vec_stmt.compile()
+        assert "LIMIT" in compiled.string
+        assert document_search.VECTOR_SEARCH_CANDIDATE_LIMIT in compiled.params.values()
+
+    def test_returns_full_candidate_window(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A full 30-chunk candidate window is processed end-to-end: every
+        chunk survives in ranking order, the neighbour fetch requests
+        2 × N aux positions, and a debug log flags the full window."""
+        doc = make_document(status=DocumentStatus.PROCESSED)
+        count = document_search.VECTOR_SEARCH_CANDIDATE_LIMIT
+        initial = [self._make_chunk(doc.id, i, f"c{i}") for i in range(count)]
+        session = self._new_session(initial, [doc], [])
+
+        with caplog.at_level(logging.DEBUG, logger=self.LOGGER_NAME):
+            result = self._run(monkeypatch, session)
+
+        assert len(result) == count
+        assert [r["chunk_content"] for r in result] == [f"c{i}" for i in range(count)]
+        assert session.exec.call_count == 3
+
+        # Predecessor + successor pair for every candidate ⇒ 2 × N pairs
+        # in the aux-chunk ``tuple_ IN`` query.
+        aux_stmt = session.exec.call_args_list[2].args[0]
+        pairs = next(iter(aux_stmt.compile().params.values()))
+        assert len(pairs) == 2 * count
+
+        # A full window means recall may be truncated — must be logged.
+        assert any("Candidate window is full" in r.getMessage() for r in caplog.records)
+
+        # The merge pass must report the final parent-chunk count.
+        merge_logs = [
+            r.getMessage()
+            for r in caplog.records
+            if "Neighbour merge complete" in r.getMessage()
+        ]
+        assert merge_logs
+        assert f"parent_chunks={count}" in merge_logs[0]
+
+    def test_partial_candidate_window_is_not_flagged_full(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A window below the candidate limit (N − 1 chunks) is not
+        truncated: every chunk survives in ranking order, the neighbour
+        fetch requests 2 × (N − 1) positions, and no "window full"
+        truncation signal is emitted (boundary check for ``>=``)."""
+        doc = make_document(status=DocumentStatus.PROCESSED)
+        count = document_search.VECTOR_SEARCH_CANDIDATE_LIMIT - 1
+        initial = [self._make_chunk(doc.id, i, f"c{i}") for i in range(count)]
+        session = self._new_session(initial, [doc], [])
+
+        with caplog.at_level(logging.DEBUG, logger=self.LOGGER_NAME):
+            result = self._run(monkeypatch, session)
+
+        assert len(result) == count
+        assert [r["chunk_content"] for r in result] == [f"c{i}" for i in range(count)]
+        assert session.exec.call_count == 3
+
+        # Predecessor + successor pair for every candidate ⇒ 2 × (N − 1)
+        # pairs in the aux-chunk ``tuple_ IN`` query.
+        aux_stmt = session.exec.call_args_list[2].args[0]
+        pairs = next(iter(aux_stmt.compile().params.values()))
+        assert len(pairs) == 2 * count
+
+        # Below the limit the window is *not* full — no truncation signal.
+        assert not any(
+            "Candidate window is full" in r.getMessage() for r in caplog.records
+        )
+
     # ── Neighbour edge cases ────────────────────────────────────────────
 
     def test_single_chunk_without_neighbours_is_unchanged(
