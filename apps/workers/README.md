@@ -25,6 +25,14 @@ full document-processing pipeline. It runs in four stages:
    - All other file types are sent to the Modal-hosted `DoclingParser`, which
      converts the R2-hosted document into a markdown file and uploads it back
      to R2 with an additional `.md` extension.
+   - Images that surface as `<!-- image -->` placeholders in the markdown
+     (photos, logos, charts, scanned / image-only pages) are summarized and
+     transcribed by an OpenAI vision model; the result is spliced back into
+     the markdown in place of the placeholder, preserving its position in
+     the document. The model is chosen via `OPENAI_VLM_MODEL` (default
+     `gpt-4o-mini`) and authenticated with `OPENAI_API_KEY` (see below). If
+     either is missing, parsing still succeeds — those images are simply
+     left as placeholders.
 2. **Download** — `download_file_text()`
    - Generates a short-lived presigned GET URL for the markdown object
      (the original key for text files, `<s3_key>.md` for converted files)
@@ -51,6 +59,8 @@ On any failure, `_fail_job()` marks the document as `ERROR` and the job as
 | --- | --- | --- |
 | `DEEPSEEK_API_KEY` | `generate_llm_summary.py` | DeepSeek chat-completions auth (read lazily, at call time) |
 | `BUCKET_NAME` | `main.py` | R2 bucket holding documents and converted markdown |
+| `OPENAI_VLM_MODEL` | `parse_document.py` | OpenAI vision model used to summarize and transcribe images that surface as `<!-- image -->` placeholders (default `"gpt-4o-mini"`); read per document |
+| `OPENAI_API_KEY` | `parse_document.py` | Auth for the vision model; provided to the Modal container via the `openai-api-key` secret (see below) |
 
 ### Deploying the Modal parser
 
@@ -59,6 +69,17 @@ On any failure, `_fail_job()` marks the document as `ERROR` and the job as
 ```bash
 uv run python3 -m modal deploy src/parse_document.py
 ```
+
+The app attaches the `openai-api-key` Modal secret (which must contain
+`OPENAI_API_KEY`) to provide credentials for the vision-model enrichment
+step. Create it once with:
+
+```bash
+uv run python3 -m modal secret create openai-api-key OPENAI_API_KEY=<key>
+```
+
+Without the secret, parsing still works — images are simply left as
+`<!-- image -->` placeholders and a warning is logged.
 
 To see logs:
 

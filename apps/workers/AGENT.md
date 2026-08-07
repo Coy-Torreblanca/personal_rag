@@ -128,12 +128,32 @@ populate `self.request.id` when the task body reads it.
 method (not at module top-level).  Patching via `"src.parse_document.httpx"` does
 not work because `httpx` is never assigned as a module attribute.
 
-**Fix** — pre-populate `sys.modules` with a mock:
+**Fix** — pre-populate `sys.modules` with a mock, touching **only the `httpx`
+key** (do NOT use `patch.dict("sys.modules", ...)`):
 
 ```python
-with patch.dict("sys.modules", {"httpx": MagicMock()}):
+import sys
+from unittest.mock import MagicMock
+
+mock_httpx = MagicMock()
+original_httpx = sys.modules.get("httpx")
+sys.modules["httpx"] = mock_httpx
+try:
     ...
+finally:
+    if original_httpx is None:
+        sys.modules.pop("httpx", None)
+    else:
+        sys.modules["httpx"] = original_httpx
 ```
+
+⚠️ **Why `patch.dict` on `sys.modules` is forbidden:** its teardown clears the
+*entire* module registry and restores a setup-time snapshot.  Any module
+imported *during* the test body (e.g. `docling_core`, `numpy`, `PIL`) is
+silently dropped; the next re-import of a C-extension package like `numpy` then
+fails with `ImportError: cannot load module more than once per process`.  This
+bit us in `tests/test_parse_document.py` when the VLM tests started importing
+real `docling_core` inside test bodies.
 
 ### 6. pgvector requires 1536-dim embeddings
 
