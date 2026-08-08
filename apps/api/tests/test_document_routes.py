@@ -717,6 +717,147 @@ class TestDownloadDocument:
 
 
 # ---------------------------------------------------------------------------
+# GET /api/documents/{document_id}
+# ---------------------------------------------------------------------------
+
+
+class TestGetDocument:
+    """``GET /api/documents/{document_id}`` — metadata + summary + markdown."""
+
+    async def test_returns_metadata_summary_and_markdown(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """Happy path — returns full metadata, summary, and markdown content."""
+        doc_id = uuid4()
+        doc = make_document(
+            id=doc_id,
+            filename="report.pdf",
+            s3_key="org-id/report.pdf",
+            summary="A dense summary of the report.",
+            status=DocumentStatus.PROCESSED,
+        )
+        db_session.get.return_value = doc
+        r2_client.download_bytes.return_value.content = (
+            b"# Report\n\nKey findings..."
+        )
+
+        resp = await async_client.get(f"/api/documents/{doc_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == str(doc_id)
+        assert data["filename"] == "report.pdf"
+        assert data["status"] == "processed"
+        assert data["summary"] == "A dense summary of the report."
+        assert data["markdown_content"] == "# Report\n\nKey findings..."
+
+        # Non-text sources are read from ``<s3_key>.md``.
+        r2_client.download_bytes.assert_called_once_with(
+            key="org-id/report.pdf.md"
+        )
+
+    async def test_reads_original_key_for_text_files(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """Plain-text sources are already markdown — read from the original key."""
+        doc_id = uuid4()
+        doc = make_document(
+            id=doc_id,
+            filename="notes.md",
+            s3_key="org-id/notes.md",
+            file_type="text/markdown",
+            summary=None,
+        )
+        db_session.get.return_value = doc
+        r2_client.download_bytes.return_value.content = b"# Notes\n\nBody"
+
+        resp = await async_client.get(f"/api/documents/{doc_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["markdown_content"] == "# Notes\n\nBody"
+        assert data["summary"] is None
+        r2_client.download_bytes.assert_called_once_with(key="org-id/notes.md")
+
+    async def test_returns_404_for_missing_document(
+        self, async_client: AsyncClient, db_session: MagicMock
+    ) -> None:
+        """If the document does not exist, return 404."""
+        db_session.get.return_value = None
+        resp = await async_client.get(f"/api/documents/{uuid4()}")
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Document not found"
+
+    async def test_returns_null_markdown_when_download_fails(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """Missing/unavailable markdown degrades to ``null``, not a 500."""
+        doc_id = uuid4()
+        doc = make_document(
+            id=doc_id,
+            s3_key="org-id/report.pdf",
+            summary="Summary is still available.",
+        )
+        db_session.get.return_value = doc
+        r2_client.download_bytes.side_effect = S3Error("Object not found")
+
+        resp = await async_client.get(f"/api/documents/{doc_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["summary"] == "Summary is still available."
+        assert data["markdown_content"] is None
+
+    async def test_returns_null_markdown_without_s3_key(
+        self, async_client: AsyncClient, db_session: MagicMock
+    ) -> None:
+        """A document with no S3 key skips the object-storage fetch entirely."""
+        doc_id = uuid4()
+        doc = make_document(id=doc_id, s3_key=None)  # type: ignore[arg-type]
+        db_session.get.return_value = doc
+
+        resp = await async_client.get(f"/api/documents/{doc_id}")
+        assert resp.status_code == 200
+        assert resp.json()["markdown_content"] is None
+
+    async def test_invalid_document_id_returns_422(
+        self, async_client: AsyncClient
+    ) -> None:
+        """A non-UUID path segment must be rejected by FastAPI validation."""
+        resp = await async_client.get("/api/documents/not-a-uuid")
+        assert resp.status_code == 422
+
+    async def test_returns_null_markdown_without_bucket_name(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Missing ``BUCKET_NAME`` degrades markdown to ``null``."""
+        monkeypatch.delenv("BUCKET_NAME", raising=False)
+
+        doc_id = uuid4()
+        doc = make_document(
+            id=doc_id,
+            s3_key="org-id/report.pdf",
+            summary="Summary from the database.",
+        )
+        db_session.get.return_value = doc
+
+        resp = await async_client.get(f"/api/documents/{doc_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["summary"] == "Summary from the database."
+        assert data["markdown_content"] is None
+
+
+# ---------------------------------------------------------------------------
 # DELETE /api/documents/{document_id}
 # ---------------------------------------------------------------------------
 

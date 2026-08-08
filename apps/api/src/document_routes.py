@@ -4,6 +4,7 @@ Endpoints prefixed with ``/api`` and tagged ``documents``:
 
 - ``GET /api/documents`` — List all documents.
 - ``GET /api/documents/search?query=...`` — Semantic search over document content.
+- ``GET /api/documents/{document_id}`` — Fetch a document's metadata, LLM summary, and markdown content.
 - ``GET /api/documents/upload-url/{file_path:path}`` — Generate a presigned S3/R2 URL for uploading.
 - ``POST /api/documents/{job_id}/process`` — Trigger document processing via Celery.
 - ``GET /api/documents/{document_id}/download`` — Generate a presigned GET URL for downloading a document.
@@ -34,6 +35,7 @@ from logutil import get_logger
 from pydantic import BaseModel
 from s3.client import R2Client
 from s3.exceptions import S3Error
+from s3.models import FileType, get_file_type_from_extension
 from sqlmodel import Session, delete, func, select
 
 from .celery_client import celery
@@ -769,6 +771,137 @@ def search_documents(
         )
 
     return clamped_results
+
+
+class DocumentDetail(BaseModel):
+    """Full document metadata plus its processed markdown content.
+
+    Mirrors the ``Document`` model — including the LLM-generated
+    ``summary`` written by the DeepSeek worker stage — and adds
+    ``markdown_content`` fetched from object storage so a single request
+    can power a document detail view in the UI.
+
+    ``summary`` and ``markdown_content`` are nullable: documents are
+    processed asynchronously after upload, so a freshly uploaded file may
+    not have a summary or converted content yet.
+    """
+
+    id: UUID
+    organization_id: UUID
+    user_id: UUID
+    filename: str
+    file_type: str
+    file_size: int | None
+    s3_key: str | None
+    status: DocumentStatus
+    summary: str | None
+    meta_data: dict[str, object]
+    markdown_content: str | None
+    created_at: datetime | None
+    updated_at: datetime | None
+
+
+@router.get("/documents/{document_id}", response_model=DocumentDetail)
+def get_document(
+    document_id: UUID,
+    db: Session = Depends(get_db),
+) -> DocumentDetail:
+    """Fetch a single document with its summary and markdown content.
+
+    Returns the document's metadata (including the LLM-generated
+    ``summary`` stored on the record) together with the processed
+    markdown content read from object storage, so the UI can render a
+    full detail view in one request.
+
+    The markdown object key is resolved the same way the processing
+    pipeline stores it: plain-text sources (``.txt``, ``.md``, ...) are
+    already markdown and are read from the original key; every other
+    file type is read from ``<s3_key>.md``.
+
+    Missing markdown (document not processed yet, or the object was
+    deleted) is reported as ``markdown_content: null`` rather than a 500
+    — the metadata and summary are still valuable on their own, and the
+    client can show a friendly "not available yet" state.
+
+    .. note::
+
+       **Authentication / scoping** — Like the other document endpoints,
+       this returns details for **any** document id without verifying
+       the caller belongs to the document's organisation. A future
+       iteration should inject a ``current_user`` dependency and check
+       ``document.organization_id``.
+
+    Args:
+        document_id: UUID of the document to fetch.
+        db: Injected database session.
+
+    Returns:
+        The document's metadata, ``summary``, and ``markdown_content``.
+
+    Raises:
+        HTTPException 404: If no document with the given ID exists.
+    """
+    logger.info("Fetching document %s", document_id)
+    document = db.get(Document, document_id)
+    if not document:
+        logger.warning("Document not found: %s", document_id)
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Resolve the markdown object key exactly like the processing
+    # pipeline: plain-text files are already markdown (read from the
+    # original key), everything else is read from ``<s3_key>.md``.
+    markdown_content: str | None = None
+    if document.s3_key:
+        try:
+            if get_file_type_from_extension(document.s3_key) == FileType.TXT:
+                markdown_key = document.s3_key
+            else:
+                markdown_key = f"{document.s3_key}.md"
+
+            bucket_name = os.environ.get("BUCKET_NAME")
+            if not bucket_name:
+                logger.warning(
+                    "No BUCKET_NAME configured — skipping markdown fetch for document %s",
+                    document_id,
+                )
+            else:
+                client = R2Client(bucket_name=bucket_name)
+                response = client.download_bytes(key=markdown_key)
+                markdown_content = response.content.decode(
+                    "utf-8", errors="replace"
+                )
+                logger.debug(
+                    "Fetched markdown for document %s (%d chars)",
+                    document_id,
+                    len(markdown_content),
+                )
+        except S3Error as e:
+            # The markdown object may not exist yet (document still
+            # processing) or may have been cleaned up — degrade gracefully
+            # instead of failing the whole request.
+            logger.warning(
+                "Markdown content unavailable for document %s: %s",
+                document_id,
+                e,
+            )
+            markdown_content = None
+
+    logger.info("Retrieved document %s", document_id)
+    return DocumentDetail(
+        id=document.id,
+        organization_id=document.organization_id,
+        user_id=document.user_id,
+        filename=document.filename,
+        file_type=document.file_type,
+        file_size=document.file_size,
+        s3_key=document.s3_key,
+        status=document.status,
+        summary=document.summary,
+        meta_data=document.meta_data,
+        markdown_content=markdown_content,
+        created_at=document.created_at,
+        updated_at=document.updated_at,
+    )
 
 
 @router.get("/processing-jobs/{job_id}", response_model=ProcessingJob)
