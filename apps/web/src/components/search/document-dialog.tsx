@@ -78,7 +78,7 @@ export function DocumentDetailDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogPortal>
         <DialogBackdrop />
-        <DialogPopup className="max-h-[min(85vh,48rem)] w-full max-w-2xl flex-col gap-0 overflow-hidden p-0">
+        <DialogPopup className="flex max-h-[min(85vh,48rem)] w-full max-w-2xl flex-col gap-0 overflow-hidden p-0">
           {/* Keyed by open state so every open remounts the content with
               fresh state — no stale summary/markdown from a previous visit. */}
           <DocumentDetailContent
@@ -143,7 +143,7 @@ function DocumentDetailContent({
   return (
     <>
       {/* Header */}
-      <div className="flex items-start justify-between gap-4 border-b border-border p-5">
+      <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border p-5">
         <div className="min-w-0">
           <DialogTitle className="truncate text-base leading-snug">
             {document.filename}
@@ -265,7 +265,7 @@ function DocumentDetailContent({
                 )}
               </div>
               {detail?.markdown_content ? (
-                <pre className="max-h-72 overflow-auto rounded-lg border border-border bg-muted/30 p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
+                <pre className="rounded-lg border border-border bg-muted/30 p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
                   {detail.markdown_content}
                 </pre>
               ) : (

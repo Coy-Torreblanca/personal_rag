@@ -43,6 +43,9 @@ vi.mock("@/components/ui/dialog", () => {
   return {
     Dialog,
     DialogBackdrop: () => null,
+    DialogPortal: ({ children }: { children?: React.ReactNode }) => (
+      <>{children}</>
+    ),
     DialogClose: ({
       children,
       ...props
