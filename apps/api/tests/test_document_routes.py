@@ -101,7 +101,7 @@ class TestGetUploadUrl:
         user_id = uuid4()
 
         resp = await async_client.get(
-            f"/api/documents/upload-url/my-doc.pdf",
+            "/api/documents/upload-url/my-doc.pdf",
             params={
                 "organization_id": str(org_id),
                 "user_id": str(user_id),
@@ -783,6 +783,50 @@ class TestGetDocument:
         assert data["summary"] is None
         r2_client.download_bytes.assert_called_once_with(key="org-id/notes.md")
 
+    async def test_reads_original_key_for_txt_files(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """A ``.txt`` source is already markdown — read from the original key."""
+        doc_id = uuid4()
+        doc = make_document(
+            id=doc_id,
+            filename="notes.txt",
+            s3_key="org-id/notes.txt",
+            file_type="text/plain",
+        )
+        db_session.get.return_value = doc
+        r2_client.download_bytes.return_value.content = b"Plain text body"
+
+        resp = await async_client.get(f"/api/documents/{doc_id}")
+        assert resp.status_code == 200
+        assert resp.json()["markdown_content"] == "Plain text body"
+        r2_client.download_bytes.assert_called_once_with(key="org-id/notes.txt")
+
+    async def test_returns_null_markdown_on_unexpected_download_error(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """Unexpected storage errors (timeouts, ...) degrade to ``null`` too."""
+        doc_id = uuid4()
+        doc = make_document(
+            id=doc_id,
+            s3_key="org-id/report.pdf",
+            summary="Summary survives the failure.",
+        )
+        db_session.get.return_value = doc
+        r2_client.download_bytes.side_effect = ConnectionError("boom")
+
+        resp = await async_client.get(f"/api/documents/{doc_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["summary"] == "Summary survives the failure."
+        assert data["markdown_content"] is None
+
     async def test_returns_404_for_missing_document(
         self, async_client: AsyncClient, db_session: MagicMock
     ) -> None:
@@ -855,6 +899,70 @@ class TestGetDocument:
         data = resp.json()
         assert data["summary"] == "Summary from the database."
         assert data["markdown_content"] is None
+
+    async def test_decodes_non_utf8_content_with_replacement_chars(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """Non-UTF-8 bytes decode to U+FFFD replacement chars, never a 500."""
+        doc_id = uuid4()
+        doc = make_document(id=doc_id, s3_key="org-id/report.pdf")
+        db_session.get.return_value = doc
+        # "café" encoded as latin-1 — invalid UTF-8.
+        r2_client.download_bytes.return_value.content = b"caf\xe9"
+
+        resp = await async_client.get(f"/api/documents/{doc_id}")
+        assert resp.status_code == 200
+        assert resp.json()["markdown_content"] == "caf\ufffd"
+
+    async def test_unknown_extension_reads_suffixed_markdown_key(
+        self,
+        async_client: AsyncClient,
+        db_session: MagicMock,
+        r2_client: MagicMock,
+    ) -> None:
+        """Unmapped extensions (FileType.OTHER) use the ``<s3_key>.md`` key."""
+        doc_id = uuid4()
+        doc = make_document(
+            id=doc_id,
+            filename="report.xyz",
+            s3_key="org-id/report.xyz",
+        )
+        db_session.get.return_value = doc
+        r2_client.download_bytes.return_value.content = b"# Report"
+
+        resp = await async_client.get(f"/api/documents/{doc_id}")
+        assert resp.status_code == 200
+        assert resp.json()["markdown_content"] == "# Report"
+        r2_client.download_bytes.assert_called_once_with(
+            key="org-id/report.xyz.md"
+        )
+
+    async def test_document_id_route_does_not_shadow_search_route(
+        self,
+        async_client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``/documents/search`` must still resolve after adding ``{document_id}``.
+
+        Regression guard: FastAPI matches routes in declaration order, so a
+        new ``/documents/{document_id}`` route could shadow the
+        same-segment-count ``/documents/search`` route ("search" would be
+        rejected as a malformed UUID with 422) if it were ever registered
+        before it.
+        """
+        monkeypatch.setattr(
+            "src.document_routes.query_documents",
+            lambda query: [],
+        )
+
+        resp = await async_client.get(
+            "/api/documents/search", params={"query": "hello"}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == []
 
 
 # ---------------------------------------------------------------------------

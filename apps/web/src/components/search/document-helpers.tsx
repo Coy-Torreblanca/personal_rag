@@ -128,7 +128,7 @@ export function relevanceColor(score: number): string {
 }
 
 /** Format a byte count as a human-readable size (``1.2 MB``). */
-export function formatFileSize(bytes: number | null): string {
+export function formatFileSize(bytes: number | null | undefined): string {
   if (bytes === null || bytes === undefined) return "";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -147,5 +147,10 @@ export function truncateFilename(name: string, max = 48): string {
   if (ext === -1) return name.slice(0, max - 3) + "…";
   const extStr = name.slice(ext);
   const base = name.slice(0, ext);
-  return base.slice(0, max - extStr.length - 3) + "…" + extStr;
+  // Clamp to 0: with a pathologically small ``max`` (shorter than the
+  // extension plus the ellipsis) an unclamped slice start would go
+  // negative and return a string *longer* than ``max`` with the ellipsis
+  // in the wrong place. Clamping keeps the output deterministic.
+  const keep = Math.max(0, max - extStr.length - 3);
+  return base.slice(0, keep) + "…" + extStr;
 }

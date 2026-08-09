@@ -1,14 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import {
-  AlertCircle,
-  Check,
-  Copy,
-  Loader2,
-  RefreshCw,
-  X,
-} from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertCircle, Check, Copy, Loader2, RefreshCw, X } from "lucide-react";
 import { api } from "@/lib/api/client";
 import type { DocumentDetail, DocumentSearchResult } from "@/lib/api/types";
 import {
@@ -116,9 +109,16 @@ function DocumentDetailContent({
         if (!cancelled) setDetail(data ?? null);
       } catch (err) {
         if (!cancelled) {
-          setError(
-            err instanceof Error ? err.message : "An unexpected error occurred",
+          const message =
+            err instanceof Error ? err.message : "An unexpected error occurred";
+          // Follow the ``[component]`` console-error convention used by the
+          // download/delete/upload buttons so failures are diagnosable in
+          // the browser devtools as well as in the inline error banner.
+          console.error(
+            `[document-dialog] Failed to load detail for "${document.filename}":`,
+            err,
           );
+          setError(message);
         }
       }
     })();
@@ -126,7 +126,7 @@ function DocumentDetailContent({
     return () => {
       cancelled = true;
     };
-  }, [document.id, reloadKey]);
+  }, [document.id, document.filename, reloadKey]);
 
   // Loading until the fetch settles: no detail yet and no failure.
   const isLoading = detail === null && error === null;
@@ -289,13 +289,37 @@ function DocumentDetailContent({
 function CopyMarkdownButton({ content }: { content: string }) {
   const [copied, setCopied] = useState(false);
 
+  // Holds the pending "Copied → Copy" revert timer so it can be cleared if
+  // the user copies again or the dialog unmounts before it fires.
+  const resetTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    // Clear the revert timer on unmount so we never setState on a dead
+    // component (the dialog can be closed mid-acknowledgement).
+    return () => {
+      if (resetTimerRef.current !== null) {
+        window.clearTimeout(resetTimerRef.current);
+      }
+    };
+  }, []);
+
   const handleCopy = useCallback(async () => {
+    // The Clipboard API only exists in secure contexts (HTTPS or
+    // localhost). Bail out when it is missing instead of letting the
+    // optional call resolve to ``undefined`` and falsely reporting that
+    // the content was copied.
+    if (!navigator.clipboard) return;
+
     try {
-      await navigator.clipboard?.writeText(content);
+      await navigator.clipboard.writeText(content);
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
+      resetTimerRef.current = window.setTimeout(() => {
+        setCopied(false);
+        resetTimerRef.current = null;
+      }, 1500);
     } catch {
-      // Clipboard unavailable (e.g. non-secure context) — ignore silently.
+      // Write rejected (permissions, unfocused window, ...) — ignore
+      // silently; the button simply stays in its default state.
     }
   }, [content]);
 

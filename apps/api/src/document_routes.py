@@ -311,7 +311,7 @@ def process_document(job_id: UUID, db: Session = Depends(get_db)) -> dict:
 
     if document.status == DocumentStatus.PROCESSING:
         logger.warning("Document %s is already processing", document.id)
-        raise HTTPException(status_code=400, detail=f"Document is already processing.")
+        raise HTTPException(status_code=400, detail="Document is already processing.")
 
     if not document.s3_key:
         logger.error("Document %s has no S3 key", document.id)
@@ -742,10 +742,13 @@ def search_documents(
         )
     except Exception:
         logger.exception("Search failed for query_len=%d", len(query))
+        # The underlying exception was already logged above; ``from
+        # None`` suppresses the redundant chained-traceback in the
+        # HTTP response.
         raise HTTPException(
             status_code=503,
             detail="Search service is currently unavailable. Please try again later.",
-        )
+        ) from None
 
     # Clamp relevance to [0, 1] to guard against edge-case scores from
     # the Cohere API that may fall slightly outside this range.
@@ -883,6 +886,17 @@ def get_document(
                 "Markdown content unavailable for document %s: %s",
                 document_id,
                 e,
+            )
+            markdown_content = None
+        except Exception:
+            # Anything else — network timeouts, connection errors, R2 client
+            # initialisation failures — must not take the whole detail
+            # request down either: the metadata and summary are still
+            # valuable on their own. Log the traceback for diagnosis and
+            # degrade ``markdown_content`` to ``null`` like the S3Error path.
+            logger.exception(
+                "Unexpected error fetching markdown for document %s",
+                document_id,
             )
             markdown_content = None
 
