@@ -41,12 +41,19 @@ def get_db() -> Generator[Session, None, None]:
 if __name__ == "__main__":
     db = Session(engine)
 
+    org= Organization(
+        name="test_org",
+        clerk_organization_id="70885aed-0503-4656-bb72-368a26758575",
+        id="70885aed-0503-4656-bb72-368a26758575",
+    )
+
     user = User(
         email="",
         id="c06ed70c-b7bd-45a4-d0d7-0a978d44d956",
         organization_id="70885aed-0503-4656-bb72-368a26758575",
     )
 
+    db.add(org)
     db.add(user)
 
     db.commit()

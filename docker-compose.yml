@@ -11,7 +11,7 @@
 
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: docker.io/pgvector/pgvector:pg16
     container_name: 30ai-postgres
     environment:
       POSTGRES_USER: ${DB_USER:-30ai_user}
@@ -23,12 +23,12 @@ services:
       timeout: 5s
       retries: 5
     volumes:
-      - ./docker_data/postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     networks:
       - 30ai-network
 
   redis:
-    image: redis:7-alpine
+    image: docker.io/library/redis:7-alpine
     container_name: 30ai-redis
     volumes:
       - redis_data:/data
@@ -122,6 +122,7 @@ services:
 
 volumes:
   redis_data:
+  postgres_data:
 
 networks:
   30ai-network:
