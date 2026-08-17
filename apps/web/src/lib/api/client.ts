@@ -12,6 +12,7 @@ import type {
   Organization,
   User,
   Document,
+  DocumentDetail,
   DocumentSearchResult,
   ProcessingJob,
   UploadUrlResponse,
@@ -192,6 +193,18 @@ export const api = {
   /** GET /api/documents — list all documents. */
   getDocuments(opts?: RequestOptions): Promise<Document[] | undefined> {
     return get("/api/documents", opts);
+  },
+
+  /**
+   * GET /api/documents/{documentId}
+   * Fetch a single document's metadata, LLM summary, and processed
+   * markdown content in one request.
+   */
+  getDocument(
+    documentId: string,
+    opts?: RequestOptions,
+  ): Promise<DocumentDetail | undefined> {
+    return get(`/api/documents/${encodeURIComponent(documentId)}`, opts);
   },
 
   /**

@@ -52,6 +52,8 @@ export interface Document {
   file_size: number | null;
   s3_key: string | null;
   status: DocumentStatus;
+  /** LLM-generated dense summary (150-250 words); null until processed. */
+  summary: string | null;
   meta_data: Record<string, unknown>;
   created_at: string | null;
   updated_at: string | null;
@@ -70,6 +72,12 @@ export interface DocumentSearchResult {
   created_at: string | null;
   updated_at: string | null;
   relevance: number;
+}
+
+/** Response from `GET /api/documents/{document_id}`. */
+export interface DocumentDetail extends Document {
+  /** Processed markdown content read from object storage; null when unavailable. */
+  markdown_content: string | null;
 }
 
 /** Mirrors the Python `ProcessingJob` model. */

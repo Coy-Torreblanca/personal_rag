@@ -61,6 +61,48 @@ The search pipeline:
 3. Re-ranks results using Cohere's ``rerank-english-v3.0`` cross-encoder.
 4. Deduplicates by document and returns results sorted by descending relevance.
 
+## Document Detail
+
+`GET /api/documents/{document_id}` returns a single document's metadata,
+LLM-generated summary, and processed markdown content in one request —
+the endpoint that powers the document detail dialog in the web UI.
+
+### Fetch Document Details
+
+```bash
+curl "http://localhost:8000/api/documents/{document_id}"
+```
+
+**Response** (example):
+```json
+{
+  "id": "...",
+  "organization_id": "...",
+  "user_id": "...",
+  "filename": "q4-report.pdf",
+  "file_type": "application/pdf",
+  "file_size": 204800,
+  "s3_key": "org-id/q4-report.pdf",
+  "status": "processed",
+  "summary": "...",
+  "meta_data": {},
+  "markdown_content": "# Q4 Report\n\n...",
+  "created_at": "2026-01-15T10:30:00Z",
+  "updated_at": "2026-01-15T11:00:00Z"
+}
+```
+
+Notes:
+- `summary` is written by the DeepSeek worker stage during document
+  processing and is `null` while a document is still processing.
+- `markdown_content` is read from object storage: plain-text sources
+  (`.txt`, `.md`, `.html`, ...) are read from the original object key
+  (they are already markdown); every other file type is read from
+  `<s3_key>.md`. It degrades to `null` — rather than a 500 — when the
+  markdown object does not exist yet, was cleaned up, or could not be
+  fetched.
+- A non-existent (or non-UUID) document id returns `404`/`422` respectively.
+
 ## Testing Presigned URLs
 
 The API provides endpoints to generate presigned URLs for uploading documents to S3-compatible storage (Cloudflare R2).
