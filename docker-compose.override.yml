@@ -34,3 +34,11 @@ services:
     volumes:
       - ./apps/web:/app
       - /app/node_modules
+      # Keep Turbopack's build artifacts (.next) on a Docker volume
+      # instead of the host bind mount. Writing to the host filesystem
+      # can fail with "Read-only file system" (EROFS) when the podman
+      # machine restarts mid-run, which panics Turbopack.
+      - web_next:/app/.next
+
+volumes:
+  web_next:
