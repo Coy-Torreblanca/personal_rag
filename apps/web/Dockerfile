@@ -20,27 +20,23 @@ FROM node:22-slim
 
 WORKDIR /app
 
-# Copy node_modules from the deps stage.
-# At runtime, docker-compose.yml bind-mounts ./apps/web:/app and
-# declares an anonymous /app/node_modules volume, which gets seeded
-# from this directory on first start.
-COPY --from=deps /app/node_modules ./node_modules
-
-# Copy the rest of the application source.
-# This also makes the image self-sufficient when run WITHOUT the
-# compose bind mount (e.g. `podman run -p 3000:3000 30ai-web`).
-COPY . .
 
 # Disable Next.js telemetry noise
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# NOTE: No USER directive on purpose.
-# Podman runs rootless by default: inside the container, UID 0 is
-# mapped to your host user, so `next dev` can write the `.next/`
-# folder into the bind-mounted ./apps/web directory (see
-# docker-compose.yml). A non-root user such as `node` would map to
-# an unmapped sub-UID and fail with "permission denied" on that
-# bind mount.
+# 1. Add the -m flag to create a home directory (/home/nextjs) for npm logs
+RUN groupadd -r nextjs && useradd -r -m -g nextjs nextjs
+
+# 2. Give the nextjs user explicit ownership of the /app directory
+RUN chown -R nextjs:nextjs /app
+
+COPY --from=builder --chown=nextjs:nextjs /app/public ./public
+COPY --from=builder --chown=nextjs:nextjs /app/.next ./.next
+COPY --from=builder --chown=nextjs:nextjs /app/node_modules ./node_modules
+COPY --from=builder --chown=nextjs:nextjs /app/package.json ./package.json
+COPY --from=builder --chown=nextjs:nextjs /app/next.config.ts ./next.config.ts
+
+USER nextjs
 
 EXPOSE 3000
 
