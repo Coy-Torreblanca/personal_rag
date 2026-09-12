@@ -27,6 +27,27 @@ services:
     networks:
       - 30ai-network
 
+  postgres-backup:
+    build:
+      context: .
+      dockerfile: ./packages/database/backup/Dockerfile
+    container_name: 30ai-postgres-backup-cron
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_USER: ${DB_USER:-30ai_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-30ai_password}
+      POSTGRES_DB: ${DB_NAME:-30ai_db}
+      BACKUP_FILE_NAME: ${POSTGRES_BACKUP_FILE_NAME:-30ai-postgres-backup.dump}
+      ACCESS_KEY: ${R2_ACCESS_ID}
+      SECRET_KEY: ${R2_SECRET_ACCESS_KEY}
+      BUCKET_NAME: ${BUCKET_NAME}
+      ACCOUNT_ID: ${R2_ACCOUNT_ID}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - 30ai-network
+
   redis:
     image: docker.io/library/redis:7-alpine
     container_name: 30ai-redis
