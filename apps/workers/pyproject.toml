@@ -15,6 +15,7 @@ dependencies = [
     "openai>=2.48.0",
     "sqlmodel>=0.0.39",
     "docling>=2.118.0",
+    "docling-slim[format-opendocument]>=2.118.0",
 ]
 
 [tool.uv.sources]
