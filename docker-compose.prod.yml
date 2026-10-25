@@ -11,6 +11,32 @@ services:
   postgres:
     restart: unless-stopped
 
+  # Hourly pg_dump to R2. Prod-only so dev data never lands in the
+  # backup prefix. Restore with:
+  #   podman exec -it 30ai-postgres-backup-cron restore_backup.sh latest
+  postgres-backup:
+    build:
+      context: .
+      dockerfile: ./packages/database/backup/Dockerfile
+    container_name: 30ai-postgres-backup-cron
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: ${DB_USER:-30ai_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-30ai_password}
+      POSTGRES_DB: ${DB_NAME:-30ai_db}
+      BACKUP_PREFIX: ${POSTGRES_BACKUP_PREFIX:-backups/postgres}
+      BACKUP_PRUNE_DAYS: ${POSTGRES_BACKUP_PRUNE_DAYS:-14}
+      ACCESS_KEY: ${R2_ACCESS_ID}
+      SECRET_KEY: ${R2_SECRET_ACCESS_KEY}
+      BUCKET_NAME: ${BUCKET_NAME}
+      ACCOUNT_ID: ${R2_ACCOUNT_ID}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - 30ai-network
+    restart: unless-stopped
+
   redis:
     restart: unless-stopped
 
